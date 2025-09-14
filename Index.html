@@ -378,6 +378,53 @@
         
             try {
                 const resultData = await handleGenerationRequest({ type, model, inputData });
+
+                // Helper function to resize a base64 image to fit under Firestore's 1MB document limit.
+                const resizeBase64Img = (base64, maxWidth, maxHeight, quality = 0.9) => {
+                    return new Promise((resolve, reject) => {
+                        const img = new Image();
+                        img.src = base64;
+                        img.onload = () => {
+                            let width = img.width;
+                            let height = img.height;
+
+                            if (width > height) {
+                                if (width > maxWidth) {
+                                    height *= maxWidth / width;
+                                    width = maxWidth;
+                                }
+                            } else {
+                                if (height > maxHeight) {
+                                    width *= maxHeight / height;
+                                    height = maxHeight;
+                                }
+                            }
+
+                            const canvas = document.createElement('canvas');
+                            canvas.width = width;
+                            canvas.height = height;
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(img, 0, 0, width, height);
+                            // Use JPEG for better compression to ensure it fits in Firestore.
+                            resolve(canvas.toDataURL('image/jpeg', quality));
+                        };
+                        img.onerror = (error) => reject(error);
+                    });
+                };
+
+                // WORKAROUND: If the generation is a photo, resize it to fit Firestore's 1MB limit.
+                // This avoids the Firebase Storage permission issue in the preview environment.
+                if (resultData.status === 'completed' && resultData.type === 'photo' && resultData.outputUrl.startsWith('data:image')) {
+                    try {
+                        if (statusElement) statusElement.textContent = 'Оптимизация изображения...';
+                        // Resize to a max dimension of 1024px, which should be well under the limit.
+                        const resizedDataUrl = await resizeBase64Img(resultData.outputUrl, 1024, 1024, 0.9);
+                        resultData.outputUrl = resizedDataUrl;
+                    } catch (resizeError) {
+                        console.error("Image resize failed:", resizeError);
+                        // Fallback to the original URL, which might fail to save but is better than nothing.
+                    }
+                }
                 
                 await updateDoc(docRef, resultData);
                 
@@ -398,7 +445,7 @@
                     statusElement.textContent = `Ошибка: ${resultData.errorMessage || 'Неизвестная ошибка'}`;
                 }
             } catch (error) {
-                console.error("Generation API error:", error);
+                console.error("Generation or Storage error:", error);
                 const errorData = { status: 'failed', errorMessage: error.message };
                 await updateDoc(docRef, errorData);
                 if(cacheKey) lastGenerationResults[cacheKey] = errorData;
@@ -746,6 +793,13 @@
                 case 'videoTextSection': return { statusElement: dom.videoStatusFromText, resultElement: dom.videoResultFromText };
                 case 'videoImageSection': return { statusElement: dom.videoFromImageStatus, resultElement: dom.videoResultFromImage };
                 case 'removeBgSection': return { statusElement: dom.removeBgStatus, resultElement: dom.removeBgResult };
+                case 'replaceBgSection': return { statusElement: dom.replaceBgStatus, resultElement: dom.replaceBgResult };
+                case 'addShadowSection': return { statusElement: dom.addShadowStatus, resultElement: dom.addShadowResult };
+                case 'replaceObjectSection': return { statusElement: dom.replaceObjectStatus, resultElement: dom.replaceObjectResult };
+                case 'recolorObjectSection': return { statusElement: dom.recolorObjectStatus, resultElement: dom.recolorObjectResult };
+                case 'expandImageSection': return { statusElement: dom.expandImageStatus, resultElement: dom.expandImageResult };
+                case 'upscaleImageSection': return { statusElement: dom.upscaleImageStatus, resultElement: dom.upscaleImageResult };
+                case 'enhanceLightSection': return { statusElement: dom.enhanceLightStatus, resultElement: dom.enhanceLightResult };
                 case 'freeTransformSection': return { statusElement: dom.freeTransformStatus, resultElement: dom.freeTransformResult };
                 default: return { statusElement: null, resultElement: null };
             }
@@ -922,13 +976,69 @@
                 removeBgStatus: document.getElementById('removeBgStatus'),
                 removeBgResult: document.getElementById('removeBgResult'),
 
+                // --- Replace BG Section ---
+                replaceBgUpload: document.getElementById('replaceBgUpload'),
+                replaceBgNewBgUpload: document.getElementById('replaceBgNewBgUpload'),
+                replaceBgPreview: document.getElementById('replaceBgPreview'),
+                replaceBgNewBgPreview: document.getElementById('replaceBgNewBgPreview'),
+                replaceBgPrompt: document.getElementById('replaceBgPrompt'),
+                replaceBgBtn: document.getElementById('replaceBgBtn'),
+                replaceBgStatus: document.getElementById('replaceBgStatus'),
+                replaceBgResult: document.getElementById('replaceBgResult'),
+
+                // --- Add Shadow Section ---
+                addShadowUpload: document.getElementById('addShadowUpload'),
+                addShadowPreview: document.getElementById('addShadowPreview'),
+                addShadowBtn: document.getElementById('addShadowBtn'),
+                addShadowStatus: document.getElementById('addShadowStatus'),
+                addShadowResult: document.getElementById('addShadowResult'),
+
+                 // --- Recolor Object Section ---
+                recolorObjectUpload: document.getElementById('recolorObjectUpload'),
+                recolorObjectCanvasContainer: document.getElementById('recolorObjectCanvasContainer'),
+                recolorObjectPrompt: document.getElementById('recolorObjectPrompt'),
+                generateRecolorObjectBtn: document.getElementById('generateRecolorObjectBtn'),
+                recolorObjectStatus: document.getElementById('recolorObjectStatus'),
+                recolorObjectResult: document.getElementById('recolorObjectResult'),
+
+                 // --- Replace Object Section ---
+                replaceObjectUpload: document.getElementById('replaceObjectUpload'),
+                replaceObjectCanvasContainer: document.getElementById('replaceObjectCanvasContainer'),
+                replaceObjectPrompt: document.getElementById('replaceObjectPrompt'),
+                generateReplaceObjectBtn: document.getElementById('generateReplaceObjectBtn'),
+                replaceObjectStatus: document.getElementById('replaceObjectStatus'),
+                replaceObjectResult: document.getElementById('replaceObjectResult'),
+
+                 // --- Expand Image Section ---
+                expandImageUpload: document.getElementById('expandImageUpload'),
+                expandImagePreview: document.getElementById('expandImagePreview'),
+                expandPixels: document.getElementById('expandPixels'),
+                expandImagePrompt: document.getElementById('expandImagePrompt'),
+                expandImageBtn: document.getElementById('expandImageBtn'),
+                expandImageStatus: document.getElementById('expandImageStatus'),
+                expandImageResult: document.getElementById('expandImageResult'),
+
+                 // --- Upscale Image Section ---
+                upscaleImageUpload: document.getElementById('upscaleImageUpload'),
+                upscaleImagePreview: document.getElementById('upscaleImagePreview'),
+                upscaleImageBtn: document.getElementById('upscaleImageBtn'),
+                upscaleImageStatus: document.getElementById('upscaleImageStatus'),
+                upscaleImageResult: document.getElementById('upscaleImageResult'),
+
+                 // --- Enhance Light Section ---
+                enhanceLightUpload: document.getElementById('enhanceLightUpload'),
+                enhanceLightPreview: document.getElementById('enhanceLightPreview'),
+                enhanceLightBtn: document.getElementById('enhanceLightBtn'),
+                enhanceLightStatus: document.getElementById('enhanceLightStatus'),
+                enhanceLightResult: document.getElementById('enhanceLightResult'),
+
                  // --- Free Transform Section ---
                 freeTransformUpload: document.getElementById('freeTransformUpload'),
                 freeTransformCanvasContainer: document.getElementById('freeTransformCanvasContainer'),
                 freeTransformPrompt: document.getElementById('freeTransformPrompt'),
                 generateFreeTransformBtn: document.getElementById('generateFreeTransformBtn'),
                 freeTransformStatus: document.getElementById('freeTransformStatus'),
-                freeTransformResult: document.getElementById('freeTransformResult'),
+                freeTransformResult: document.getElementById('freeTransformResult')
              };
             
             dom.themeToggleBtn?.addEventListener('click', () => {
@@ -1261,8 +1371,8 @@
                     dom.photoStatus.textContent = '';
                 }
             });
-            
-             dom.generatePhotoFromBlendBtn?.addEventListener('click', async () => {
+
+            dom.generatePhotoFromBlendBtn?.addEventListener('click', async () => {
                 const file1 = dom.generatePhotoBlendImage1.files[0];
                 const file2 = dom.generatePhotoBlendImage2.files[0];
                 const prompt = dom.generatePhotoBlendInput.value;
@@ -1275,7 +1385,10 @@
                     const b64_2 = await fileToDataUrl(file2).then(dataUrlToBase64);
                     const parts = [ { text: prompt || "Смешай эти два изображения." }, { inlineData: { mimeType: file1.type, data: b64_1 } }, { inlineData: { mimeType: file2.type, data: b64_2 } } ];
                     createRequest({ type: 'photo', model: 'Gemini', source: 'generate_photo_blend', inputData: { parts, ratio }, statusElement: dom.photoStatus, resultElement: dom.photoResult, cacheKey: 'generatePhotoSection' });
-                } catch(e) { showModal({ title: 'Ошибка', content: 'Не удалось обработать файлы.'}); dom.photoStatus.textContent = ''; }
+                } catch(e) { 
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файлы.'}); 
+                    dom.photoStatus.textContent = ''; 
+                }
             });
 
             dom.generateFirstFrameTextBtn?.addEventListener('click', () => {
@@ -1308,7 +1421,10 @@
                     }
                     const parts = [ { text: prompt || "Сгенерируй изображение на основе этого фото." }, { inlineData: { mimeType, data: base64Data } } ];
                     createRequest({ type: 'photo', model: 'Gemini', source: 'first_frame_image', inputData: { parts, ratio }, statusElement: dom.firstFrameStatus, resultElement: dom.firstFrameResult, cacheKey: 'firstFrameSection' });
-                } catch(err) { showModal({ title: 'Ошибка', content: 'Не удалось обработать файл.' }); dom.firstFrameStatus.textContent = ''; }
+                } catch(err) { 
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файл.' }); 
+                    dom.firstFrameStatus.textContent = ''; 
+                }
             });
 
             dom.generateFirstFrameBlendBtn?.addEventListener('click', async () => {
@@ -1324,7 +1440,29 @@
                     const b64_2 = await fileToDataUrl(file2).then(dataUrlToBase64);
                     const parts = [ { text: prompt || "Смешай эти два изображения." }, { inlineData: { mimeType: file1.type, data: b64_1 } }, { inlineData: { mimeType: file2.type, data: b64_2 } } ];
                     createRequest({ type: 'photo', model: 'Gemini', source: 'first_frame_blend', inputData: { parts, ratio }, statusElement: dom.firstFrameStatus, resultElement: dom.firstFrameResult, cacheKey: 'firstFrameSection' });
-                } catch(e) { showModal({ title: 'Ошибка', content: 'Не удалось обработать файлы.'}); dom.firstFrameStatus.textContent = ''; }
+                } catch(e) { 
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файлы.'}); 
+                    dom.firstFrameStatus.textContent = ''; 
+                }
+            });
+
+             dom.generatePhotoFromBlendBtn?.addEventListener('click', async () => {
+                const file1 = dom.generatePhotoBlendImage1.files[0];
+                const file2 = dom.generatePhotoBlendImage2.files[0];
+                const prompt = dom.generatePhotoBlendInput.value;
+                const ratio = document.querySelector('input[name="generatePhotoBlendRatio"]:checked')?.value || '16:9';
+                if (!file1 || !file2) return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите оба фото."});
+
+                dom.photoStatus.textContent = 'Конвертация файлов...';
+                try {
+                    const b64_1 = await fileToDataUrl(file1).then(dataUrlToBase64);
+                    const b64_2 = await fileToDataUrl(file2).then(dataUrlToBase64);
+                    const parts = [ { text: prompt || "Смешай эти два изображения." }, { inlineData: { mimeType: file1.type, data: b64_1 } }, { inlineData: { mimeType: file2.type, data: b64_2 } } ];
+                    createRequest({ type: 'photo', model: 'Gemini', source: 'generate_photo_blend', inputData: { parts, ratio }, statusElement: dom.photoStatus, resultElement: dom.photoResult, cacheKey: 'generatePhotoSection' });
+                } catch(e) { 
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файлы.'}); 
+                    dom.photoStatus.textContent = ''; 
+                }
             });
 
             dom.generateVideoFromTextBtn?.addEventListener('click', () => {
@@ -1377,9 +1515,68 @@
                 }
             });
 
-            const initFreeTransformCanvas = () => {
-                const container = dom.freeTransformCanvasContainer;
-                const fileInput = dom.freeTransformUpload;
+            dom.replaceBgBtn?.addEventListener('click', async () => {
+                const mainFile = dom.replaceBgUpload.files[0];
+                const bgFile = dom.replaceBgNewBgUpload.files[0];
+                const userPrompt = dom.replaceBgPrompt.value;
+
+                if (!mainFile || !bgFile) {
+                    return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите оба изображения: основное и для фона." });
+                }
+                
+                dom.replaceBgStatus.textContent = 'Обработка изображений...';
+                try {
+                    const mainBase64 = await fileToDataUrl(mainFile).then(dataUrlToBase64);
+                    const bgBase64 = await fileToDataUrl(bgFile).then(dataUrlToBase64);
+
+                    const fullPrompt = `First, identify and isolate the main subject from the first image, removing its original background completely. Then, seamlessly place this isolated subject onto the second image, which serves as the new background. The integration should be realistic, with appropriate lighting, shadows, and scaling to match the new environment. ${userPrompt}`;
+
+                    const parts = [
+                        { text: fullPrompt },
+                        { inlineData: { mimeType: mainFile.type, data: mainBase64 } },
+                        { inlineData: { mimeType: bgFile.type, data: bgBase64 } }
+                    ];
+
+                    createRequest({ 
+                        type: 'photo', 
+                        model: 'Gemini', 
+                        source: 'replace_bg', 
+                        inputData: { parts }, 
+                        statusElement: dom.replaceBgStatus, 
+                        resultElement: dom.replaceBgResult, 
+                        cacheKey: 'replaceBgSection' 
+                    });
+                } catch(e) {
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файлы изображений.'});
+                    dom.replaceBgStatus.textContent = '';
+                }
+            });
+
+            dom.addShadowBtn?.addEventListener('click', async () => {
+                const file = dom.addShadowUpload.files[0];
+                if (!file) return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите фото." });
+                dom.addShadowStatus.textContent = 'Обработка изображения...';
+                try {
+                    const base64Data = await fileToDataUrl(file).then(dataUrlToBase64);
+                    const parts = [ { text: "Add a realistic shadow to the main object in the image. The object should look like it is standing on a surface. Keep the original background." }, { inlineData: { mimeType: file.type, data: base64Data } } ];
+                    createRequest({ 
+                        type: 'photo', 
+                        model: 'Gemini', 
+                        source: 'add_shadow', 
+                        inputData: { parts }, 
+                        statusElement: dom.addShadowStatus, 
+                        resultElement: dom.addShadowResult, 
+                        cacheKey: 'addShadowSection' 
+                    });
+                } catch(e) {
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файл.'});
+                    dom.addShadowStatus.textContent = '';
+                }
+            });
+
+            const initRecolorObjectCanvas = () => {
+                const container = dom.recolorObjectCanvasContainer;
+                const fileInput = dom.recolorObjectUpload;
                 let originalImageDataUrl = null;
                 
                 fileInput.addEventListener('change', (e) => {
@@ -1389,15 +1586,234 @@
                     const reader = new FileReader();
                     reader.onload = (event) => {
                         originalImageDataUrl = event.target.result;
-                        container.innerHTML = ''; // Clear previous
+                        container.innerHTML = ''; // Clear placeholder text
                         const img = new Image();
                         img.onload = () => {
+                            container.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
                             const canvas = document.createElement('canvas');
-                            canvas.className = "absolute top-0 left-0 cursor-crosshair";
-                            canvas.width = img.width;
-                            canvas.height = img.height;
-                            container.style.width = `${img.width}px`;
-                            container.style.height = `${img.height}px`;
+                            canvas.width = img.naturalWidth;
+                            canvas.height = img.naturalHeight;
+                            img.className = "absolute top-0 left-0 w-full h-full object-contain";
+                            canvas.className = "relative w-full h-full cursor-crosshair";
+                            container.append(img, canvas);
+                            
+                            const ctx = canvas.getContext('2d');
+                            let isDrawing = false;
+                            ctx.strokeStyle = 'rgba(255, 0, 221, 0.7)';
+                            ctx.lineWidth = 30;
+                            ctx.lineCap = 'round';
+                            ctx.lineJoin = 'round';
+
+                            const getCoords = (e) => {
+                                const rect = canvas.getBoundingClientRect();
+                                const scaleX = canvas.width / rect.width;
+                                const scaleY = canvas.height / rect.height;
+                                const clientX = e.clientX || e.touches[0].clientX;
+                                const clientY = e.clientY || e.touches[0].clientY;
+                                return {
+                                    x: (clientX - rect.left) * scaleX,
+                                    y: (clientY - rect.top) * scaleY
+                                };
+                            };
+
+                            const startDrawing = (e) => { e.preventDefault(); isDrawing = true; const { x, y } = getCoords(e); ctx.beginPath(); ctx.moveTo(x, y); };
+                            const draw = (e) => { if (!isDrawing) return; e.preventDefault(); const { x, y } = getCoords(e); ctx.lineTo(x, y); ctx.stroke(); };
+                            const stopDrawing = () => { isDrawing = false; ctx.closePath(); };
+
+                            canvas.addEventListener('mousedown', startDrawing);
+                            canvas.addEventListener('mousemove', draw);
+                            canvas.addEventListener('mouseup', stopDrawing);
+                            canvas.addEventListener('mouseout', stopDrawing);
+                            canvas.addEventListener('touchstart', startDrawing);
+                            canvas.addEventListener('touchmove', draw);
+                            canvas.addEventListener('touchend', stopDrawing);
+                        };
+                        img.src = originalImageDataUrl;
+                    };
+                    reader.readAsDataURL(file);
+                });
+
+                dom.generateRecolorObjectBtn.addEventListener('click', () => {
+                    const canvas = container.querySelector('canvas');
+                    const prompt = dom.recolorObjectPrompt.value;
+                    if (!originalImageDataUrl || !canvas) return showModal({ title: 'Ошибка', content: "Сначала загрузите изображение." });
+                    if (!prompt) return showModal({ title: 'Ошибка', content: "Введите, в какой цвет перекрасить объект." });
+                    
+                    const maskDataUrl = canvas.toDataURL('image/png');
+                    const fullPrompt = `Recolor the masked area of the image to be ${prompt}. The original texture, lighting, and shadows of the object should be preserved as much as possible, just change the color. The rest of the image (the unmasked area) must remain completely unchanged.`;
+                    const parts = [
+                        { text: fullPrompt },
+                        { inlineData: { mimeType: originalImageDataUrl.match(/data:(.*);/)[1], data: dataUrlToBase64(originalImageDataUrl) } },
+                        { inlineData: { mimeType: 'image/png', data: dataUrlToBase64(maskDataUrl) } }
+                    ];
+
+                    createRequest({
+                        type: 'photo',
+                        model: 'Gemini',
+                        source: 'recolor_obj',
+                        inputData: { parts },
+                        statusElement: dom.recolorObjectStatus,
+                        resultElement: dom.recolorObjectResult,
+                        cacheKey: 'recolorObjectSection'
+                    });
+                });
+            };
+            initRecolorObjectCanvas();
+
+            dom.expandImageBtn?.addEventListener('click', async () => {
+                const file = dom.expandImageUpload.files[0];
+                const direction = document.querySelector('input[name="expandDirection"]:checked')?.value;
+                const pixels = dom.expandPixels.value;
+                const userPrompt = dom.expandImagePrompt.value;
+
+                if (!file) {
+                    return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите изображение." });
+                }
+                if (!direction) {
+                    return showModal({ title: 'Ошибка', content: "Пожалуйста, выберите направление для расширения." });
+                }
+                if (!pixels || parseInt(pixels) <= 0) {
+                    return showModal({ title: 'Ошибка', content: "Пожалуйста, укажите положительное количество пикселей." });
+                }
+
+                dom.expandImageStatus.textContent = 'Обработка изображения...';
+
+                try {
+                    const base64Data = await fileToDataUrl(file).then(dataUrlToBase64);
+
+                    let directionText = '';
+                    switch (direction) {
+                        case 'up': directionText = 'upwards'; break;
+                        case 'down': directionText = 'downwards'; break;
+                        case 'left': directionText = 'to the left'; break;
+                        case 'right': directionText = 'to the right'; break;
+                        case 'all': directionText = 'on all sides'; break;
+                    }
+
+                    const fullPrompt = `This is an outpainting task. Expand the given image ${directionText} by approximately ${pixels} pixels. The new, expanded area should be a natural and seamless continuation of the existing image content, perfectly matching the style, lighting, textures, and objects. The original part of the image must remain completely unchanged at its original position. ${userPrompt}`;
+
+                    const parts = [
+                        { text: fullPrompt },
+                        { inlineData: { mimeType: file.type, data: base64Data } }
+                    ];
+
+                    createRequest({
+                        type: 'photo',
+                        model: 'Gemini',
+                        source: 'expand_img',
+                        inputData: { parts },
+                        statusElement: dom.expandImageStatus,
+                        resultElement: dom.expandImageResult,
+                        cacheKey: 'expandImageSection'
+                    });
+
+                } catch (e) {
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файл.' });
+                    dom.expandImageStatus.textContent = '';
+                }
+            });
+
+            dom.upscaleImageBtn?.addEventListener('click', async () => {
+                const file = dom.upscaleImageUpload.files[0];
+                const factor = document.querySelector('input[name="upscaleFactor"]:checked')?.value;
+
+                if (!file) {
+                    return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите изображение." });
+                }
+
+                dom.upscaleImageStatus.textContent = 'Обработка изображения...';
+
+                try {
+                    const base64Data = await fileToDataUrl(file).then(dataUrlToBase64);
+
+                    const factorText = factor === 'x2' ? '2x' : '4x';
+                    
+                    const fullPrompt = `Upscale the following image by a factor of ${factorText}. Increase the resolution and enhance the details, making it sharper and clearer, while perfectly preserving the original content, style, and composition. The final image should be a higher-resolution version of the original.`;
+
+                    const parts = [
+                        { text: fullPrompt },
+                        { inlineData: { mimeType: file.type, data: base64Data } }
+                    ];
+
+                    createRequest({
+                        type: 'photo',
+                        model: 'Gemini',
+                        source: 'upscale_img',
+                        inputData: { parts },
+                        statusElement: dom.upscaleImageStatus,
+                        resultElement: dom.upscaleImageResult,
+                        cacheKey: 'upscaleImageSection'
+                    });
+
+                } catch (e) {
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файл.' });
+                    dom.upscaleImageStatus.textContent = '';
+                }
+            });
+
+            dom.enhanceLightBtn?.addEventListener('click', async () => {
+                const file = dom.enhanceLightUpload.files[0];
+
+                if (!file) {
+                    return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите изображение." });
+                }
+
+                dom.enhanceLightStatus.textContent = 'Обработка изображения...';
+
+                try {
+                    const base64Data = await fileToDataUrl(file).then(dataUrlToBase64);
+
+                    const fullPrompt = `Enhance the lighting and shadows in this image. Improve the colors to make them more vibrant and balanced. Normalize the shadows to add depth and realism without losing detail in dark areas. The final result should look natural and well-lit, as if taken by a professional photographer. The original content and composition must not be changed.`;
+
+                    const parts = [
+                        { text: fullPrompt },
+                        { inlineData: { mimeType: file.type, data: base64Data } }
+                    ];
+
+                    createRequest({
+                        type: 'photo',
+                        model: 'Gemini',
+                        source: 'enhance_light',
+                        inputData: { parts },
+                        statusElement: dom.enhanceLightStatus,
+                        resultElement: dom.enhanceLightResult,
+                        cacheKey: 'enhanceLightSection'
+                    });
+
+                } catch (e) {
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файл.' });
+                    dom.enhanceLightStatus.textContent = '';
+                }
+            });
+
+            const initReplaceObjectCanvas = () => {
+                const container = dom.replaceObjectCanvasContainer;
+                const fileInput = dom.replaceObjectUpload;
+                let originalImageDataUrl = null;
+                
+                fileInput.addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        originalImageDataUrl = event.target.result;
+                        container.innerHTML = ''; // Clear placeholder text
+                        const img = new Image();
+                        img.onload = () => {
+                            // Dynamically set the container's aspect ratio to match the image
+                            container.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
+
+                            const canvas = document.createElement('canvas');
+                            
+                            // Set the canvas buffer to the image's original, high resolution
+                            canvas.width = img.naturalWidth;
+                            canvas.height = img.naturalHeight;
+
+                            // Style both elements to fill the container correctly
+                            img.className = "absolute top-0 left-0 w-full h-full object-contain";
+                            canvas.className = "relative w-full h-full cursor-crosshair"; // Canvas on top
+                            
                             container.append(img, canvas);
                             
                             const ctx = canvas.getContext('2d');
@@ -1449,7 +1865,125 @@
                             canvas.addEventListener('touchend', stopDrawing);
                         };
                         img.src = originalImageDataUrl;
-                        img.className = "max-w-full h-auto block";
+                    };
+                    reader.readAsDataURL(file);
+                });
+
+                dom.generateReplaceObjectBtn.addEventListener('click', () => {
+                    const canvas = container.querySelector('canvas');
+                    const prompt = dom.replaceObjectPrompt.value;
+
+                    if (!originalImageDataUrl || !canvas) {
+                        showModal({ title: 'Ошибка', content: "Сначала загрузите изображение." });
+                        return;
+                    }
+                    if (!prompt) {
+                        showModal({ title: 'Ошибка', content: "Введите промпт, описывающий, на что нужно заменить объект." });
+                        return;
+                    }
+                    
+                    const maskDataUrl = canvas.toDataURL('image/png');
+                    
+                    const fullPrompt = `In the following image, replace the area indicated by the mask with: ${prompt}. The replacement should be seamless and blend naturally with the rest of the image. Keep the rest of the image unchanged.`
+
+                    const parts = [
+                        { text: fullPrompt },
+                        { inlineData: { mimeType: originalImageDataUrl.match(/data:(.*);/)[1], data: dataUrlToBase64(originalImageDataUrl) } },
+                        { inlineData: { mimeType: 'image/png', data: dataUrlToBase64(maskDataUrl) } }
+                    ];
+
+                    createRequest({
+                        type: 'photo',
+                        model: 'Gemini',
+                        source: 'replace_obj',
+                        inputData: { parts },
+                        statusElement: dom.replaceObjectStatus,
+                        resultElement: dom.replaceObjectResult,
+                        cacheKey: 'replaceObjectSection'
+                    });
+                });
+            };
+            initReplaceObjectCanvas();
+
+            const initFreeTransformCanvas = () => {
+                const container = dom.freeTransformCanvasContainer;
+                const fileInput = dom.freeTransformUpload;
+                let originalImageDataUrl = null;
+                
+                fileInput.addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        originalImageDataUrl = event.target.result;
+                        container.innerHTML = ''; // Clear placeholder text
+                        const img = new Image();
+                        img.onload = () => {
+                            // Dynamically set the container's aspect ratio to match the image
+                            container.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
+
+                            const canvas = document.createElement('canvas');
+                            
+                            // Set the canvas buffer to the image's original, high resolution
+                            canvas.width = img.naturalWidth;
+                            canvas.height = img.naturalHeight;
+
+                             // Style both elements to fill the container correctly
+                            img.className = "absolute top-0 left-0 w-full h-full object-contain";
+                            canvas.className = "relative w-full h-full cursor-crosshair"; // Canvas on top
+
+                            container.append(img, canvas);
+                            
+                            const ctx = canvas.getContext('2d');
+                            let isDrawing = false;
+                            ctx.strokeStyle = 'rgba(255, 0, 221, 0.7)';
+                            ctx.lineWidth = 30;
+                            ctx.lineCap = 'round';
+                            ctx.lineJoin = 'round';
+
+                            const getCoords = (e) => {
+                                const rect = canvas.getBoundingClientRect();
+                                const scaleX = canvas.width / rect.width;
+                                const scaleY = canvas.height / rect.height;
+                                const clientX = e.clientX || e.touches[0].clientX;
+                                const clientY = e.clientY || e.touches[0].clientY;
+                                return {
+                                    x: (clientX - rect.left) * scaleX,
+                                    y: (clientY - rect.top) * scaleY
+                                };
+                            };
+
+                            const startDrawing = (e) => {
+                                e.preventDefault();
+                                isDrawing = true;
+                                const { x, y } = getCoords(e);
+                                ctx.beginPath();
+                                ctx.moveTo(x, y);
+                            };
+
+                            const draw = (e) => {
+                                if (!isDrawing) return;
+                                e.preventDefault();
+                                const { x, y } = getCoords(e);
+                                ctx.lineTo(x, y);
+                                ctx.stroke();
+                            };
+
+                            const stopDrawing = () => {
+                                isDrawing = false;
+                                ctx.closePath();
+                            };
+
+                            canvas.addEventListener('mousedown', startDrawing);
+                            canvas.addEventListener('mousemove', draw);
+                            canvas.addEventListener('mouseup', stopDrawing);
+                            canvas.addEventListener('mouseout', stopDrawing);
+                            canvas.addEventListener('touchstart', startDrawing);
+                            canvas.addEventListener('touchmove', draw);
+                            canvas.addEventListener('touchend', stopDrawing);
+                        };
+                        img.src = originalImageDataUrl;
                     };
                     reader.readAsDataURL(file);
                 });
@@ -1646,6 +2180,12 @@
             setupImagePreview('generatePhotoBlendImage2', 'generatePhotoBlendPreview2');
             setupImagePreview('imageUploadVideo', 'imagePreviewVideo');
             setupImagePreview('removeBgUpload', 'removeBgPreview');
+            setupImagePreview('addShadowUpload', 'addShadowPreview');
+            setupImagePreview('replaceBgUpload', 'replaceBgPreview');
+            setupImagePreview('replaceBgNewBgUpload', 'replaceBgNewBgPreview');
+            setupImagePreview('expandImageUpload', 'expandImagePreview');
+            setupImagePreview('upscaleImageUpload', 'upscaleImagePreview');
+            setupImagePreview('enhanceLightUpload', 'enhanceLightPreview');
         };
     </script>
     <style>
@@ -1665,7 +2205,7 @@
             padding: 2rem;
             text-align: center;
             cursor: pointer;
-            transition: background-color 0.2s;
+            transition: background-color: 0.2s;
         }
         .upload-drop-zone.dragover {
             background-color: #e9e9e9;
@@ -1763,37 +2303,41 @@
                          <img src="https://static.tildacdn.com/lib/icons/tilda/photography_camera.svg" class="h-8 w-8 rounded-md dark:invert" alt="Фото">
                          <span>Генерация фото</span>
                     </span>
-                    <i class="fas fa-chevron-down transform transition-transform duration-200"></i>
-                </button>
-                <div id="photoSubmenu" class="hidden mt-2 pl-4 lg:absolute lg:top-0 lg:left-full lg:w-80 lg:bg-gray-300 lg:dark:bg-gray-700 lg:rounded-r-lg lg:shadow-lg lg:p-2 lg:z-50 lg:max-h-[80vh] lg:overflow-y-auto">
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-2">
-                        <button data-target-section="generatePhotoSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Генерация фото"><span class="text-xs text-center">Генерация фото</span></div></button>
-                        <button data-target-section="removeBgSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3538-6531-4664-b630-306562653762/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Удаление фона"><span class="text-xs text-center">Удаление фона</span></div></button>
-                        <button data-target-section="replaceBgSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6162-3965-4562-a566-303939653736/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Замена фона"><span class="text-xs text-center">Замена фона</span></div></button>
-                        <button data-target-section="replaceObjectSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3935-3331-4132-a663-393939303934/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Замена объекта"><span class="text-xs text-center">Замена объекта</span></div></button>
-                        <button data-target-section="recolorObjectSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6166-3264-4636-b132-306332333832/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Перекрасить объект"><span class="text-xs text-center">Перекрасить объект</span></div></button>
-                        <button data-target-section="expandImageSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3136-6163-4934-a636-373039383636/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Расширить края"><span class="text-xs text-center">Расширить края</span></div></button>
-                        <button data-target-section="upscaleImageSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6466-3539-4633-a463-643461386239/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Upscale"><span class="text-xs text-center">Upscale</span></div></button>
-                        <button data-target-section="enhanceLightSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3135-6362-4734-b135-313938363765/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Свет и тень"><span class="text-xs text-center">Свет и тень</span></div></button>
-                        <button data-target-section="addShadowSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6536-3965-4131-a231-653239636331/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Добавить тень"><span class="text-xs text-center">Добавить тень</span></div></button>
-                        <button data-target-section="freeTransformSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3861-3537-4366-b961-653536373963/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Free Transform"><span class="text-xs text-center">Free Transform</span></div></button>
-                    </div>
+                <i class="fas fa-chevron-down transform transition-transform duration-200"></i>
+            </button>
+            <div id="photoSubmenu" class="hidden mt-2 overflow-y-auto max-h-[60vh] lg:absolute lg:top-0 lg:left-full lg:w-64 lg:bg-gray-300 lg:dark:bg-gray-700 lg:rounded-r-lg lg:shadow-lg lg:p-0 lg:z-50 lg:max-h-[80vh]">
+                <div class="grid grid-cols-2 divide-x divide-y divide-gray-400 dark:divide-gray-600">
+                    <button data-target-section="generatePhotoSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Генерация фото"><span class="text-xs text-center">Генерация фото</span></div></button>
+                    <button data-target-section="removeBgSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3538-6531-4664-b630-306562653762/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Удаление фона"><span class="text-xs text-center">Удаление фона</span></div></button>
+                    <button data-target-section="replaceBgSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6162-3965-4562-a566-303939653736/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Замена фона"><span class="text-xs text-center">Замена фона</span></div></button>
+                    <button data-target-section="replaceObjectSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3935-3331-4132-a663-393939303934/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Замена объекта"><span class="text-xs text-center">Замена объекта</span></div></button>
+                    <button data-target-section="recolorObjectSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6166-3264-4636-b132-306332333832/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Перекрасить объект"><span class="text-xs text-center">Перекрасить объект</span></div></button>
+                    <button data-target-section="expandImageSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3136-6163-4934-a636-373039383636/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Расширить края"><span class="text-xs text-center">Расширить края</span></div></button>
+                    <button data-target-section="upscaleImageSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6466-3539-4633-a463-643461386239/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Upscale"><span class="text-xs text-center">Upscale</span></div></button>
+                    <button data-target-section="enhanceLightSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3135-6362-4734-b135-313938363765/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Свет и тень"><span class="text-xs text-center">Свет и тень</span></div></button>
+                    <button data-target-section="addShadowSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6536-3965-4131-a231-653239636331/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Добавить тень"><span class="text-xs text-center">Добавить тень</span></div></button>
+                    <button data-target-section="freeTransformSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3861-3537-4366-b961-653536373963/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Free Transform"><span class="text-xs text-center">Free Transform</span></div></button>
                 </div>
-            </li>
-            <li>
-                 <button id="sidebarAiVideoBtn" class="w-full text-left p-2 rounded-md flex items-center justify-between hover:bg-blue-600">
+            </div>
+        </li>
+        <li>
+             <button id="sidebarAiVideoBtn" class="w-full text-left p-2 rounded-md flex items-center justify-between hover:bg-blue-600">
                     <span class="flex items-center space-x-2">
                         <img src="https://static.tildacdn.com/lib/icons/tilda/video_camera_record.svg" class="h-8 w-8 rounded-md dark:invert" alt="Видео">
                         <span>Генерация видео</span>
                     </span>
-                    <i class="fas fa-chevron-down transform transition-transform duration-200"></i>
-                </button>
-                <div id="videoSubmenu" class="hidden mt-2 pl-4 lg:absolute lg:top-0 lg:left-full lg:w-64 lg:bg-gray-300 lg:dark:bg-gray-700 lg:rounded-r-lg lg:shadow-lg lg:p-2 lg:z-50 lg:max-h-[80vh] lg:overflow-y-auto">
-                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-2">
-                        <button data-target-section="firstFrameSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Генерация кадра"><span class="text-xs text-center">Первый кадр</span></div></button>
-                        <button data-target-section="videoTextSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6366-6433-4236-b663-643038393364/IMG_7441.gif" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Текст в видео"><span class="text-xs text-center">На основе текста</span></div></button>
-                        <button data-target-section="videoImageSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3338-3865-4234-a666-636433333830/IMG_7440.gif" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Фото в видео"><span class="text-xs text-center">На основе фото</span></div></button>
-                    </div>
+                <i class="fas fa-chevron-down transform transition-transform duration-200"></i>
+            </button>
+            <div id="videoSubmenu" class="hidden mt-2 overflow-y-auto max-h-[60vh] lg:absolute lg:top-0 lg:left-full lg:w-56 lg:bg-gray-300 lg:dark:bg-gray-700 lg:rounded-r-lg lg:shadow-lg lg:p-0 lg:z-50 lg:max-h-[80vh]">
+                 <div class="grid grid-cols-2 divide-x divide-y divide-gray-400 dark:divide-gray-600">
+                    <button data-target-section="firstFrameSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Генерация кадра"><span class="text-xs text-center">Первый кадр</span></div></button>
+                    <button data-target-section="videoTextSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6366-6433-4236-b663-643038393364/IMG_7441.gif" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Текст в видео"><span class="text-xs text-center">На основе текста</span></div></button>
+                    <button data-target-section="videoImageSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3338-3865-4234-a666-636433333830/IMG_7440.gif" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Фото в видео"><span class="text-xs text-center">На основе фото</span></div></button>
+                </div>
+            </div>
+        </li>
+    </ul>
+</div>
                 </div>
             </li>
         </ul>
@@ -2201,58 +2745,202 @@
         <div id="replaceBgSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
             <h1 class="text-3xl font-bold text-center relative">Замена фона <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
             <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
-                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
-                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+                <p class="text-sm text-center text-gray-500">Загрузите основное фото (с объектом) и фото для нового фона.</p>
+                <div class="flex flex-col md:flex-row gap-4 w-full max-w-2xl">
+                    <div class="flex-1">
+                        <label for="replaceBgUpload" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Основное фото</label>
+                        <input type="file" id="replaceBgUpload" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                        <img id="replaceBgPreview" class="mt-2 rounded-lg max-h-48 hidden mx-auto">
+                    </div>
+                    <div class="flex-1">
+                        <label for="replaceBgNewBgUpload" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Новый фон</label>
+                        <input type="file" id="replaceBgNewBgUpload" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                        <img id="replaceBgNewBgPreview" class="mt-2 rounded-lg max-h-48 hidden mx-auto">
+                    </div>
+                </div>
+                <textarea id="replaceBgPrompt" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-4 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Дополнительные инструкции (например, 'поставь человека слева')"></textarea>
+                <button id="replaceBgBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Заменить фон</button>
+                <div id="replaceBgStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="replaceBgResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                    <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                    <div id="sectionRecents_replaceBgSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                    <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                    <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                    <div id="allRecents_replaceBgSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
             </div>
         </div>
         <div id="replaceObjectSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
             <h1 class="text-3xl font-bold text-center relative">Замена объекта <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
             <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
-                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
-                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
-            </div>
+                <p class="text-sm text-center text-gray-500">Загрузите изображение, закрасьте объект, который хотите заменить, и опишите, на что его заменить.</p>
+                <input type="file" id="replaceObjectUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                <div id="replaceObjectCanvasContainer" class="relative mt-4 mx-auto flex justify-center items-center border-2 border-dashed border-gray-400 rounded-lg" style="max-width: 90vw; max-height: 60vh; min-height: 200px;">
+                    <p class="text-gray-500">Загрузите изображение, чтобы начать</p>
+                </div>
+                <textarea id="replaceObjectPrompt" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-4 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="На что заменить выделенный объект? (например, 'красный спортивный автомобиль')"></textarea>
+                <button id="generateReplaceObjectBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Заменить объект</button>
+                <div id="replaceObjectStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="replaceObjectResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                  <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                  <div id="sectionRecents_replaceObjectSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                  <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                  <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                  <div id="allRecents_replaceObjectSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+               </div>
+           </div>
         </div>
         <div id="recolorObjectSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
             <h1 class="text-3xl font-bold text-center relative">Перекрасить объект <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
             <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
-                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
-                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+                <p class="text-sm text-center text-gray-500">Загрузите изображение, закрасьте объект и напишите, в какой цвет его перекрасить.</p>
+                <input type="file" id="recolorObjectUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                <div id="recolorObjectCanvasContainer" class="relative mt-4 mx-auto flex justify-center items-center border-2 border-dashed border-gray-400 rounded-lg" style="max-width: 90vw; max-height: 60vh; min-height: 200px;">
+                    <p class="text-gray-500">Загрузите изображение, чтобы начать</p>
+                </div>
+                <textarea id="recolorObjectPrompt" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-4 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="В какой цвет перекрасить? (например, 'в красный', 'в ярко-зеленый')"></textarea>
+                <button id="generateRecolorObjectBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Перекрасить</button>
+                <div id="recolorObjectStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="recolorObjectResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                    <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                    <div id="sectionRecents_recolorObjectSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                    <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                    <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                    <div id="allRecents_recolorObjectSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
             </div>
         </div>
         <div id="expandImageSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
             <h1 class="text-3xl font-bold text-center relative">Расширить края <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
             <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
-                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
-                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+                <p class="text-sm text-center text-gray-500">Загрузите фото, выберите направление и укажите, на сколько расширить изображение.</p>
+                <input type="file" id="expandImageUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                <img id="expandImagePreview" class="mt-2 rounded-lg max-h-60 hidden">
+
+                <div class="w-full max-w-2xl space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Направление</label>
+                        <div class="mt-2 grid grid-cols-2 sm:grid-cols-5 gap-2">
+                            <label class="flex items-center justify-center p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 has-[:checked]:bg-indigo-50 has-[:checked]:border-indigo-500 dark:has-[:checked]:bg-gray-600">
+                                <input type="radio" name="expandDirection" value="up" class="sr-only" checked>
+                                <span>Вверх</span>
+                            </label>
+                             <label class="flex items-center justify-center p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 has-[:checked]:bg-indigo-50 has-[:checked]:border-indigo-500 dark:has-[:checked]:bg-gray-600">
+                                <input type="radio" name="expandDirection" value="down" class="sr-only">
+                                <span>Вниз</span>
+                            </label>
+                             <label class="flex items-center justify-center p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 has-[:checked]:bg-indigo-50 has-[:checked]:border-indigo-500 dark:has-[:checked]:bg-gray-600">
+                                <input type="radio" name="expandDirection" value="left" class="sr-only">
+                                <span>Влево</span>
+                            </label>
+                             <label class="flex items-center justify-center p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 has-[:checked]:bg-indigo-50 has-[:checked]:border-indigo-500 dark:has-[:checked]:bg-gray-600">
+                                <input type="radio" name="expandDirection" value="right" class="sr-only">
+                                <span>Вправо</span>
+                            </label>
+                             <label class="flex items-center justify-center p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 has-[:checked]:bg-indigo-50 has-[:checked]:border-indigo-500 dark:has-[:checked]:bg-gray-600">
+                                <input type="radio" name="expandDirection" value="all" class="sr-only">
+                                <span>Все</span>
+                            </label>
+                        </div>
+                    </div>
+                     <div>
+                        <label for="expandPixels" class="block text-sm font-medium text-gray-700 dark:text-gray-300">На сколько пикселей (приблизительно)</label>
+                        <input type="number" id="expandPixels" value="256" min="50" max="1024" class="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-gray-100 dark:bg-gray-900 dark:border-gray-600">
+                    </div>
+                </div>
+
+                <textarea id="expandImagePrompt" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-4 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Что дорисовать в новой области? (необязательно)"></textarea>
+                <button id="expandImageBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Расширить</button>
+                <div id="expandImageStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="expandImageResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                    <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                    <div id="sectionRecents_expandImageSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                    <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                    <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                    <div id="allRecents_expandImageSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
             </div>
         </div>
         <div id="upscaleImageSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
             <h1 class="text-3xl font-bold text-center relative">Upscale <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
             <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
-                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
-                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+                <p class="text-sm text-center text-gray-500">Загрузите фото для увеличения разрешения.</p>
+                <input type="file" id="upscaleImageUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                <img id="upscaleImagePreview" class="mt-2 rounded-lg max-h-60 hidden">
+
+                <div class="w-full max-w-2xl space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Масштаб</label>
+                        <div class="mt-2 grid grid-cols-2 gap-2">
+                            <label class="flex items-center justify-center p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 has-[:checked]:bg-indigo-50 has-[:checked]:border-indigo-500 dark:has-[:checked]:bg-gray-600">
+                                <input type="radio" name="upscaleFactor" value="x2" class="sr-only" checked>
+                                <span>x2</span>
+                            </label>
+                             <label class="flex items-center justify-center p-3 border rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 has-[:checked]:bg-indigo-50 has-[:checked]:border-indigo-500 dark:has-[:checked]:bg-gray-600">
+                                <input type="radio" name="upscaleFactor" value="x4" class="sr-only">
+                                <span>x4</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <button id="upscaleImageBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Увеличить</button>
+                <div id="upscaleImageStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="upscaleImageResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                    <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                    <div id="sectionRecents_upscaleImageSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                    <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                    <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                    <div id="allRecents_upscaleImageSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
             </div>
         </div>
         <div id="enhanceLightSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
             <h1 class="text-3xl font-bold text-center relative">Свет и тень <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
             <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
-                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
-                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+                <p class="text-sm text-center text-gray-500">Загрузите фото, чтобы улучшить освещение и тени.</p>
+                <input type="file" id="enhanceLightUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                <img id="enhanceLightPreview" class="mt-2 rounded-lg max-h-60 hidden">
+                <button id="enhanceLightBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Улучшить</button>
+                <div id="enhanceLightStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="enhanceLightResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                    <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                    <div id="sectionRecents_enhanceLightSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                    <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                    <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                    <div id="allRecents_enhanceLightSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
             </div>
         </div>
         <div id="addShadowSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
             <h1 class="text-3xl font-bold text-center relative">Добавить тень <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
             <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
-                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
-                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+                <input type="file" id="addShadowUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                <img id="addShadowPreview" class="mt-2 rounded-lg max-h-60 hidden">
+                <button id="addShadowBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Добавить тень</button>
+                <div id="addShadowStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="addShadowResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                   <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                   <div id="sectionRecents_addShadowSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                   <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                   <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                   <div id="allRecents_addShadowSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
             </div>
         </div>
         <div id="freeTransformSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
             <h1 class="text-3xl font-bold text-center relative">Свободное трансформирование <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
             <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
                  <input type="file" id="freeTransformUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
-                 <div id="freeTransformCanvasContainer" class="relative mt-4 mx-auto" style="max-width: 90vw; max-height: 60vh;">
-                     <!-- Image and Canvas will be inserted here by JS -->
+                 <div id="freeTransformCanvasContainer" class="relative mt-4 mx-auto flex justify-center items-center border-2 border-dashed border-gray-400 rounded-lg" style="max-width: 90vw; max-height: 60vh; min-height: 200px;">
+                     <p class="text-gray-500">Загрузите изображение, чтобы начать</p>
                  </div>
                  <textarea id="freeTransformPrompt" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-4 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Опишите, как изменить закрашенную область"></textarea>
                  <button id="generateFreeTransformBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Трансформировать</button>
@@ -2272,3 +2960,6 @@
 
 </body>
 </html>
+
+
+
