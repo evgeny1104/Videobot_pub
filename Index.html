@@ -1,0 +1,2274 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Приложение для генерации фото и видео</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+        }
+    </script>
+    <script src="https://kit.fontawesome.com/a2d3b5b637.js" crossorigin="anonymous"></script>
+    <script src="https://securepay.tinkoff.ru/html/payForm/js/tinkoff_v2.js"></script>
+    <script type="module">
+        // Apply theme immediately to prevent flashing
+        if (localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.classList.add('dark')
+        } else {
+          document.documentElement.classList.remove('dark')
+        }
+
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            GoogleAuthProvider, 
+            OAuthProvider,
+            signInWithEmailAndPassword,
+            createUserWithEmailAndPassword,
+            signInWithPopup, 
+            onAuthStateChanged, 
+            signOut,
+            getAdditionalUserInfo
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, updateDoc, serverTimestamp, getDoc, runTransaction, query, limit, orderBy, deleteDoc, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const apiKey = ""; // Gemini API Key (provided by Canvas)
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        const storage = getStorage(app);
+        let userId = null;
+        let isAuthReady = false;
+        let currentUser = null;
+        let quickAccessWidgets = [];
+        let isAdmin = false;
+
+        let dom = {};
+        let lastGenerationResults = {};
+        let recentGenerationsCache = [];
+
+        const MAX_FREE_REQUESTS = 100;
+        const STARTING_TOKENS = 100;
+        
+        const allTools = [
+            { id: 'generate_photo', name: 'Генерация фото', icon: 'https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg', target: 'generatePhotoSection', category: 'photo' },
+            { id: 'remove_bg', name: 'Удаление фона', icon: 'https://static.tildacdn.com/tild3538-6531-4664-b630-306562653762/Image_36.jpeg', target: 'removeBgSection', category: 'photo' },
+            { id: 'replace_bg', name: 'Замена фона', icon: 'https://static.tildacdn.com/tild6162-3965-4562-a566-303939653736/Image_36.jpeg', target: 'replaceBgSection', category: 'photo' },
+            { id: 'replace_obj', name: 'Замена объекта', icon: 'https://static.tildacdn.com/tild3935-3331-4132-a663-393939303934/Image_36.jpeg', target: 'replaceObjectSection', category: 'photo' },
+            { id: 'recolor_obj', name: 'Перекрасить объект', icon: 'https://static.tildacdn.com/tild6166-3264-4636-b132-306332333832/Image_36.jpeg', target: 'recolorObjectSection', category: 'photo' },
+            { id: 'expand_img', name: 'Расширить края', icon: 'https://static.tildacdn.com/tild3136-6163-4934-a636-373039383636/Image_36.jpeg', target: 'expandImageSection', category: 'photo' },
+            { id: 'upscale_img', name: 'Upscale', icon: 'https://static.tildacdn.com/tild6466-3539-4633-a463-643461386239/Image_36.jpeg', target: 'upscaleImageSection', category: 'photo' },
+            { id: 'enhance_light', name: 'Свет и тень', icon: 'https://static.tildacdn.com/tild3135-6362-4734-b135-313938363765/Image_36.jpeg', target: 'enhanceLightSection', category: 'photo' },
+            { id: 'add_shadow', name: 'Добавить тень', icon: 'https://static.tildacdn.com/tild6536-3965-4131-a231-653239636331/Image_36.jpeg', target: 'addShadowSection', category: 'photo' },
+            { id: 'free_transform', name: 'Free Transform', icon: 'https://static.tildacdn.com/tild3861-3537-4366-b961-653536373963/Image_36.jpeg', target: 'freeTransformSection', category: 'photo' },
+            { id: 'text_to_video', name: 'На основе текста', icon: 'https://static.tildacdn.com/tild6366-6433-4236-b663-643038393364/IMG_7441.gif', target: 'videoTextSection', category: 'video' },
+            { id: 'photo_to_video', name: 'На основе фото', icon: 'https://static.tildacdn.com/tild3338-3865-4234-a666-636433333830/IMG_7440.gif', target: 'videoImageSection', category: 'video' },
+            { id: 'first_frame', name: 'Генерация первого кадра', icon: 'https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg', target: 'firstFrameSection', category: 'video' },
+        ];
+        
+        const fileToDataUrl = (file) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = error => reject(error);
+        });
+
+        const dataUrlToBase64 = (dataUrl) => dataUrl.split(',')[1];
+        
+        function showModal(options) {
+            const { title = '', content, isHtml = false, buttons = [{ text: 'OK' }] } = options;
+
+            const existingModal = document.querySelector('.modal-container');
+            if (existingModal) existingModal.remove();
+
+            const modal = document.createElement('div');
+            modal.className = 'modal-container fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-[100]';
+
+            const buttonsHtml = buttons.map((btn, index) =>
+                `<button id="modal-btn-${index}" class="px-4 py-2 rounded-md font-semibold text-sm ${btn.className || 'bg-indigo-600 hover:bg-indigo-700 text-white'}">${btn.text}</button>`
+            ).join('');
+
+            modal.innerHTML = `
+                <div class="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-lg w-full shadow-lg text-gray-800 dark:text-gray-100 relative transform transition-all scale-95 opacity-0 animate-fade-in-up">
+                    <button class="absolute top-2 right-2 p-1 text-2xl leading-none close-modal">&times;</button>
+                    ${title ? `<h3 class="text-xl font-bold mb-4">${title}</h3>` : ''}
+                    <div>${isHtml ? content : `<p>${content}</p>`}</div>
+                    <div class="mt-6 flex justify-end gap-3">
+                        ${buttonsHtml}
+                    </div>
+                </div>
+            `;
+            const style = document.createElement('style');
+            style.innerHTML = `
+                @keyframes fade-in-up {
+                    from { transform: scale(0.95) translateY(10px); opacity: 0; }
+                    to { transform: scale(1) translateY(0); opacity: 1; }
+                }
+                .animate-fade-in-up {
+                    animation: fade-in-up 0.3s ease-out forwards;
+                }
+            `;
+            document.head.appendChild(style);
+            
+            document.body.appendChild(modal);
+
+            const closeModal = () => {
+                const modalDiv = modal.querySelector('div');
+                modalDiv.style.animation = 'fade-in-up 0.3s ease-in reverse forwards';
+                modalDiv.addEventListener('animationend', () => {
+                    modal.remove();
+                    style.remove();
+                }, { once: true });
+            };
+
+            buttons.forEach((btn, index) => {
+                document.getElementById(`modal-btn-${index}`).addEventListener('click', () => {
+                    if (btn.onClick) {
+                        btn.onClick();
+                    }
+                    closeModal();
+                });
+            });
+
+            modal.addEventListener('click', (e) => {
+                if (e.target.classList.contains('modal-container') || e.target.classList.contains('close-modal')) {
+                    closeModal();
+                }
+            });
+        }
+        
+        function showPreviewModal(gen, currentSectionId) {
+            const existingModal = document.querySelector('.preview-modal-container');
+            if (existingModal) existingModal.remove();
+
+            const modal = document.createElement('div');
+            modal.className = 'preview-modal-container fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-4 z-[101]';
+            
+            const mediaElement = gen.type === 'photo'
+                ? `<img src="${gen.outputUrl}" class="max-w-full max-h-[70vh] rounded-lg shadow-lg" alt="Превью">`
+                : `<video controls autoplay loop src="${gen.outputUrl}" class="max-w-full max-h-[70vh] rounded-lg shadow-lg"></video>`;
+
+            const canSubstitute = gen.type === 'photo' && [
+                'generatePhotoSection', 
+                'firstFrameSection', 
+                'videoImageSection'
+            ].includes(currentSectionId);
+
+            const substituteButtonHtml = canSubstitute
+                ? `<button id="substituteBtn" class="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                     <img src="https://static.tildacdn.com/lib/icons/tilda/outline_plus.svg" class="h-5 w-5 invert">
+                     <span>Добавить для генерации</span>
+                   </button>`
+                : '';
+
+            modal.innerHTML = `
+                <div class="relative w-full h-full flex flex-col items-center justify-center gap-4">
+                    <button class="absolute top-4 right-4 p-2 text-white text-4xl leading-none" onclick="this.closest('.preview-modal-container').remove()">&times;</button>
+                    ${mediaElement}
+                    <div class="flex items-center gap-4 p-4 bg-gray-900 bg-opacity-50 rounded-lg">
+                        <a href="${gen.outputUrl}" download="generation-${gen.requestId || Date.now()}.${gen.type === 'photo' ? 'png' : 'mp4'}" class="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700">
+                            <img src="https://static.tildacdn.com/lib/icons/tilda/download.svg" class="h-5 w-5 invert">
+                            <span>Скачать оригинал</span>
+                        </a>
+                        ${substituteButtonHtml}
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    modal.remove();
+                }
+            });
+
+            if (canSubstitute) {
+                document.getElementById('substituteBtn').addEventListener('click', () => {
+                    handleSubstitute(gen.outputUrl, currentSectionId);
+                    modal.remove();
+                });
+            }
+        }
+
+        function handleSubstitute(url, sectionId) {
+            let previewElement, targetTabBtn, generateBtn, inputElement;
+            const capitalize = s => s.charAt(0).toUpperCase() + s.slice(1);
+
+            const findActiveTabAndElements = (sectionPrefix) => {
+                const prefix = sectionPrefix.replace('generate', '').toLowerCase(); // generatePhoto -> photo
+                const activeTab = document.querySelector(`#${sectionPrefix}Section .border-indigo-500`);
+                if (activeTab && activeTab.id.includes('ImageBtn')) {
+                    return { 
+                        previewElement: dom[`${sectionPrefix}ImagePreview`], 
+                        generateBtn: dom[`generate${capitalize(prefix)}FromImageBtn`],
+                        inputElement: dom[`${sectionPrefix}ImageUpload`]
+                    };
+                }
+                return {};
+            };
+
+            switch(sectionId) {
+                case 'generatePhotoSection':
+                    ({ previewElement, generateBtn, inputElement } = findActiveTabAndElements('generatePhoto'));
+                    targetTabBtn = dom.generatePhotoImageBtn;
+                    break;
+                case 'firstFrameSection':
+                    ({ previewElement, generateBtn, inputElement } = findActiveTabAndElements('firstFrame'));
+                    targetTabBtn = dom.firstFrameImageBtn;
+                    break;
+                case 'videoImageSection':
+                    previewElement = dom.imagePreviewVideo;
+                    generateBtn = dom.generateVideoFromImageBtn;
+                    inputElement = dom.imageUploadVideo;
+                    break;
+                default:
+                    return;
+            }
+            
+            if (previewElement && generateBtn) {
+                previewElement.src = url;
+                previewElement.classList.remove('hidden');
+                generateBtn.dataset.substitutedUrl = url;
+                
+                if (inputElement) inputElement.value = '';
+                
+                if (targetTabBtn && !targetTabBtn.classList.contains('border-indigo-500')) {
+                    targetTabBtn.click();
+                }
+                
+                showModal({ title: 'Успешно', content: 'Изображение подставлено в текущий раздел.' });
+            } else {
+                 showModal({ title: 'Ошибка', content: 'Не удалось подставить изображение. Убедитесь, что вы находитесь на вкладке "На основе фото".' });
+            }
+        }
+
+
+        async function mockApiCall(serviceName, duration = 3000) {
+            console.log(`Calling mock API for ${serviceName}...`);
+            await new Promise(resolve => setTimeout(resolve, duration));
+            console.log(`Mock response received from ${serviceName}.`);
+            return {
+                status: 'completed',
+                outputUrl: "https://www.w3schools.com/html/mov_bbb.mp4",
+                outputText: `Это мок-ответ от ${serviceName}.`
+            };
+        }
+
+        async function handleGenerationRequest(options) {
+            const { type, model, inputData } = options;
+            try {
+                switch(model) {
+                    case 'Gemini':
+                        const parts = [...inputData.parts];
+                        if (inputData.ratio) {
+                            parts.unshift({ text: `VERY IMPORTANT: The final image aspect ratio MUST BE EXACTLY ${inputData.ratio}. This is a strict requirement. Do not deviate from this aspect ratio.` });
+                        }
+
+                        if (type === 'photo') {
+                            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
+                            const payload = { contents: [{ parts }], generationConfig: { responseModalities: ['IMAGE'] } };
+                            const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                            
+                            if (!response.ok) {
+                                let errorBody = "Unknown API Error";
+                                try {
+                                    errorBody = await response.json();
+                                } catch(e) {
+                                    errorBody = await response.text();
+                                }
+                                console.error("Gemini API Error Response:", errorBody);
+                                throw new Error(errorBody?.error?.message || `API request failed with status ${response.status}`);
+                            }
+
+                            const result = await response.json();
+
+                            if (result.error) {
+                                console.error("Gemini API Error:", result.error);
+                                throw new Error(result.error.message);
+                            }
+                            
+                            const base64Data = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+                            if (!base64Data) {
+                                console.error("Invalid response structure from Gemini:", result);
+                                throw new Error("Не удалось сгенерировать изображение. Ответ API не содержит данных изображения.");
+                            }
+                            return { status: 'completed', outputUrl: `data:image/png;base64,${base64Data}`, type: 'photo' };
+                        } else if (type === 'text') {
+                            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                            const payload = { contents: [{ parts }] };
+                            const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                            const result = await response.json();
+                            if (!response.ok || result.error) throw new Error(result.error ? result.error.message : "API Error");
+                            const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                            if (!text) throw new Error("Не удалось получить ответ от AI.");
+                            return { status: 'completed', outputText: text, type: 'text' };
+                        }
+                        break;
+                    case 'Midjourney V1': return { ...(await mockApiCall('GoAPI for Midjourney')), type: 'video'};
+                    case 'Ray-2':
+                    case 'Ray-2 flash': return { ...(await mockApiCall('Luma AI for Ray')), type: 'video'};
+                    case 'GEN-4': return { ...(await mockApiCall('Runway for Gen-4')), type: 'video'};
+                    case 'VEO-3': return { ...(await mockApiCall('kie.ai for Veo-3')), type: 'video'};
+                    default:
+                        console.log(`No specific API configured for model ${model}. Using default mock.`);
+                        return { ...(await mockApiCall('Default Mock Service')), type };
+                }
+            } catch (error) {
+                console.error("Full generation error:", error);
+                return { status: 'failed', errorMessage: error.message, type };
+            }
+        }
+        
+        async function createRequest(options) {
+            const { type, model, source, inputData, statusElement, resultElement, cacheKey } = options;
+            
+            if (statusElement) statusElement.textContent = 'Обработка...';
+            if (resultElement) resultElement.innerHTML = '<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-indigo-500"></div></div>';
+            
+            lastGenerationResults[cacheKey] = { status: 'pending' };
+        
+            const user = await ensureUser();
+            if (!user) {
+                if (statusElement) statusElement.textContent = 'Ошибка: Требуется авторизация.';
+                showModal({ title: 'Ошибка', content: 'Для выполнения этого действия необходимо войти в аккаунт.' });
+                return;
+            }
+        
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const profileRef = doc(db, `artifacts/${appId}/users/${user.uid}/profile/data`);
+                    const profileDoc = await transaction.get(profileRef);
+        
+                    if (user.isAnonymous) {
+                        const freeRequests = profileDoc.exists() ? profileDoc.data().freeRequests || 0 : 0;
+                        if (freeRequests >= MAX_FREE_REQUESTS) throw new Error("Free requests limit reached.");
+                        transaction.set(profileRef, { freeRequests: freeRequests + 1 }, { merge: true });
+                    } else {
+                        const currentTokens = profileDoc.exists() ? profileDoc.data().tokens ?? STARTING_TOKENS : STARTING_TOKENS;
+                        if (currentTokens <= 0) throw new Error("Недостаточно токенов");
+                        transaction.set(profileRef, { tokens: currentTokens - 1 }, { merge: true });
+                    }
+                });
+            } catch (e) {
+                console.error("Transaction failed: ", e);
+                const message = e.message === "Free requests limit reached." ? "У вас закончились пробные запросы. Пожалуйста, войдите."
+                              : e.message === "Недостаточно токенов" ? "У вас недостаточно токенов. Пожалуйста, пополните баланс."
+                              : "Не удалось списать токены. Попробуйте еще раз.";
+                showModal({ title: 'Ошибка', content: message });
+                if (statusElement) statusElement.textContent = `Ошибка: ${message}`;
+                if (resultElement) resultElement.innerHTML = '';
+                 lastGenerationResults[cacheKey] = { status: 'failed' };
+                return;
+            }
+        
+            const privatePath = `/artifacts/${appId}/users/${user.uid}/requests`;
+            const docRef = doc(collection(db, privatePath));
+            const saveData = { requestId: docRef.id, type, model, source, status: 'pending', createdAt: serverTimestamp() };
+            if (inputData.prompt) saveData.prompt = inputData.prompt;
+            await setDoc(docRef, saveData);
+        
+            try {
+                const resultData = await handleGenerationRequest({ type, model, inputData });
+                
+                await updateDoc(docRef, resultData);
+                
+                if(cacheKey) lastGenerationResults[cacheKey] = resultData;
+                
+                if (statusElement) statusElement.textContent = `Статус: ${resultData.status}`;
+                if (resultElement && resultData.status === 'completed') {
+                    if (resultData.outputUrl) {
+                        if (resultData.type === 'photo') {
+                            resultElement.innerHTML = `<img src="${resultData.outputUrl}" class="mt-4 rounded-lg shadow-lg w-full max-w-lg mx-auto" alt="Generated Image">`;
+                        } else if (resultData.type === 'video') {
+                            resultElement.innerHTML = `<video controls src="${resultData.outputUrl}" class="mt-4 rounded-lg shadow-lg w-full max-w-lg mx-auto"></video>`;
+                        }
+                    } else if (resultData.outputText) {
+                         resultElement.innerHTML = `<p class="mt-4 p-4 bg-gray-100 dark:bg-gray-700 rounded-lg">${resultData.outputText}</p>`;
+                    }
+                } else if (statusElement && resultData.status === 'failed') {
+                    statusElement.textContent = `Ошибка: ${resultData.errorMessage || 'Неизвестная ошибка'}`;
+                }
+            } catch (error) {
+                console.error("Generation API error:", error);
+                const errorData = { status: 'failed', errorMessage: error.message };
+                await updateDoc(docRef, errorData);
+                if(cacheKey) lastGenerationResults[cacheKey] = errorData;
+                if (statusElement) statusElement.textContent = `Ошибка: ${error.message}`;
+                if (resultElement) resultElement.innerHTML = '';
+            }
+        }
+        
+
+        function updateUI(user) {
+            currentUser = user;
+            if (!dom.loginBtn) return;
+
+            const tokenDisplayElements = [dom.tokenBalanceHeader, dom.tokenBalanceDropdown];
+            
+            if (user) {
+                userId = user.uid;
+                isAdmin = initialAuthToken && user.providerData[0]?.providerId === 'custom';
+                if(dom.adminPanelContainer) dom.adminPanelContainer.classList.toggle('hidden', !isAdmin);
+
+                if (user.isAnonymous) {
+                    dom.loginBtn.classList.remove('hidden');
+                    dom.profileAvatarBtn.classList.add('hidden');
+                    
+                    if (isAuthReady) {
+                        onSnapshot(doc(db, `artifacts/${appId}/users/${userId}/profile/data`), (doc) => {
+                            const profileData = doc.data();
+                            const usedRequests = (profileData && profileData.freeRequests !== undefined) ? profileData.freeRequests : 0;
+                            const remaining = MAX_FREE_REQUESTS - usedRequests;
+                            tokenDisplayElements.forEach(el => { if(el) el.textContent = `${remaining > 0 ? remaining : 0}`});
+                            if(dom.tokenTypeDropdown) dom.tokenTypeDropdown.textContent = 'бесплатных пробных';
+                        });
+                    }
+                } else {
+                    const avatarUrl = user.photoURL || `https://placehold.co/100x100/A0AEC0/ffffff?text=${(user.displayName || 'U').charAt(0)}`;
+                    const displayName = user.displayName || user.email ||'Пользователь';
+
+                    if (dom.profileAvatar) dom.profileAvatar.src = avatarUrl;
+                    if (dom.profileAvatarDisplay) dom.profileAvatarDisplay.src = avatarUrl;
+                    if (dom.userProfileName) dom.userProfileName.textContent = displayName;
+                    
+                    dom.profileAvatarBtn.classList.remove('hidden');
+                    dom.loginBtn.classList.add('hidden');
+                    
+                    if(isAuthReady) {
+                        onSnapshot(doc(db, `artifacts/${appId}/users/${userId}/profile/data`), (doc) => {
+                            const profileData = doc.data();
+                            const tokens = (profileData && profileData.tokens !== undefined) ? profileData.tokens : STARTING_TOKENS;
+                            tokenDisplayElements.forEach(el => {if(el) el.textContent = `${tokens}`});
+                            if(dom.tokenTypeDropdown) dom.tokenTypeDropdown.textContent = 'токенов';
+                            if(dom.tokenBalanceProfile) dom.tokenBalanceProfile.textContent = `Баланс: ${tokens} токенов`;
+                        }, (error) => console.error("Firestore listen error:", error));
+                        
+                        onSnapshot(doc(db, `artifacts/${appId}/users/${userId}/profile/avatar`), (doc) => {
+                            const avatarData = doc.data();
+                            if (avatarData && avatarData.url) {
+                                if (dom.profileAvatar) dom.profileAvatar.src = avatarData.url;
+                                if (dom.profileAvatarDisplay) dom.profileAvatarDisplay.src = avatarData.url;
+                            }
+                        }, (error) => console.error("Avatar fetch error:", error));
+                    }
+                }
+            } else { // No user
+                isAdmin = false;
+                dom.loginBtn.classList.remove('hidden');
+                dom.profileAvatarBtn.classList.add('hidden');
+                if(dom.adminPanelContainer) dom.adminPanelContainer.classList.add('hidden');
+                tokenDisplayElements.forEach(el => {if(el) el.textContent = `0`});
+                if(dom.tokenTypeDropdown) dom.tokenTypeDropdown.textContent = 'токенов';
+            }
+        }
+        
+        const renderGenerationsGrid = (container, generationList, currentSectionId) => {
+            if (!container) return;
+            container.innerHTML = '';
+            if (generationList.length === 0) {
+                container.innerHTML = '<p class="text-sm text-gray-500 col-span-full text-center">Здесь пока ничего нет.</p>';
+                return;
+            }
+            generationList.forEach(gen => {
+                if (gen.status !== 'completed' || (!gen.outputUrl && !gen.outputText)) return;
+                
+                const wrapper = document.createElement('div');
+                wrapper.className = 'relative group w-24 h-24 rounded-lg overflow-hidden border-2 border-gray-300 dark:border-gray-600 transition-transform duration-200 transform hover:scale-105 cursor-pointer';
+                
+                let mediaElement;
+                if (gen.type === 'photo') {
+                    mediaElement = `<img src="${gen.outputUrl}" class="w-full h-full object-cover" alt="Превью">`;
+                } else if (gen.type === 'video') {
+                    mediaElement = `<video src="${gen.outputUrl}" class="w-full h-full object-cover" preload="metadata"></video>`;
+                } else {
+                    return;
+                }
+
+                wrapper.innerHTML = `
+                    ${mediaElement}
+                    <div class="absolute inset-0 bg-black bg-opacity-25 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                         <i class="fas fa-search-plus text-white text-2xl"></i>
+                    </div>
+                `;
+                
+                wrapper.addEventListener('click', () => {
+                    showPreviewModal(gen, currentSectionId);
+                });
+
+                container.appendChild(wrapper);
+            });
+        };
+
+        
+        function renderHomepageFeed(generationList) {
+            if (!dom.recentGenerationsFeed) return;
+            dom.recentGenerationsFeed.innerHTML = '';
+            if(generationList.length === 0) {
+                 dom.recentGenerationsFeed.innerHTML = '<p class="text-sm text-gray-500">Здесь будут отображаться ваши последние генерации.</p>';
+                 return;
+            }
+            generationList.forEach(gen => {
+                if (gen.status !== 'completed' || !gen.outputUrl) return;
+                
+                const item = document.createElement('div');
+                item.className = 'flex-shrink-0 w-24 h-auto bg-gray-200 dark:bg-gray-700 rounded-lg overflow-hidden shadow-md';
+                
+                if (gen.type === 'photo') {
+                    item.innerHTML = `<img src="${gen.outputUrl}" class="w-full h-full object-cover aspect-[16/9]">`;
+                } else if (gen.type === 'video') {
+                    item.innerHTML = `<video src="${gen.outputUrl}" class="w-full h-full object-cover aspect-[16/9]" preload="metadata"></video>`;
+                }
+                dom.recentGenerationsFeed.appendChild(item);
+            });
+        }
+        
+        function updateGenerationGrids(sectionId) {
+            if (!sectionId) return;
+
+            const sectionRecentsContainer = document.getElementById(`sectionRecents_${sectionId}`);
+            const allRecentsContainer = document.getElementById(`allRecents_${sectionId}`);
+            
+            const tool = allTools.find(t => t.target === sectionId);
+            const sourcePrefix = tool ? tool.id : null;
+
+            const sectionGenerations = recentGenerationsCache.filter(g => g.source && sourcePrefix && g.source.startsWith(sourcePrefix));
+
+            renderGenerationsGrid(sectionRecentsContainer, sectionGenerations, sectionId);
+            renderGenerationsGrid(allRecentsContainer, recentGenerationsCache, sectionId);
+        }
+
+        function setupFirestoreListeners(uid) {
+            if (!uid || !isAuthReady) return;
+            const requestsRef = collection(db, `artifacts/${appId}/users/${uid}/requests`);
+            const q = query(requestsRef, orderBy("createdAt", "desc"), limit(50));
+            onSnapshot(q, (snapshot) => {
+                recentGenerationsCache = snapshot.docs.map(doc => ({...doc.data(), id: doc.id}));
+                
+                renderHomepageFeed(recentGenerationsCache);
+
+                const currentSection = document.querySelector('.content-section:not(.hidden)');
+                if (currentSection) {
+                    updateGenerationGrids(currentSection.id);
+                }
+
+                // Update profile page grids
+                renderGenerationsGrid(dom.profilePhotoGenerations, recentGenerationsCache.filter(g => g.type === 'photo'), 'profileSection');
+                renderGenerationsGrid(dom.profileVideoGenerations, recentGenerationsCache.filter(g => g.type === 'video'), 'profileSection');
+            }, (error) => console.error("Requests listen error:", error));
+
+            const quickAccessRef = doc(db, `artifacts/${appId}/users/${uid}/profile/quickAccess`);
+            onSnapshot(quickAccessRef, (doc) => {
+                quickAccessWidgets = doc.exists() ? doc.data().widgets || [] : [];
+                renderQuickAccessPanel(quickAccessWidgets);
+            });
+            
+            const broadcastRef = doc(db, `artifacts/${appId}/public/data/broadcast/current`);
+            onSnapshot(broadcastRef, (doc) => {
+                if (doc.exists()) {
+                    const messageData = doc.data();
+                    const lastSeenTimestamp = localStorage.getItem('lastSeenBroadcastTimestamp') || 0;
+                    if (messageData.createdAt && messageData.createdAt.toMillis() > lastSeenTimestamp) {
+                        showModal({ title: 'Объявление', content: messageData.text });
+                        localStorage.setItem('lastSeenBroadcastTimestamp', messageData.createdAt.toMillis());
+                    }
+                }
+            });
+        }
+        
+        async function ensureUser() {
+            if (auth.currentUser) return auth.currentUser;
+            try {
+                if (initialAuthToken) return (await signInWithCustomToken(auth, initialAuthToken)).user;
+                return (await signInAnonymously(auth)).user;
+            } catch (error) {
+                console.error("Automatic sign-in failed:", error);
+                showModal({ title: 'Ошибка', content: "Не удалось выполнить действие. Пожалуйста, перезагрузите страницу." });
+                return null;
+            }
+        }
+        
+        async function handleNewUser(user) {
+            if (!user) return;
+            const profileRef = doc(db, `artifacts/${appId}/users/${user.uid}/profile/data`);
+            try {
+                const profileDoc = await getDoc(profileRef);
+                if (!profileDoc.exists()) {
+                    await setDoc(profileRef, {
+                        tokens: STARTING_TOKENS,
+                        createdAt: serverTimestamp(),
+                        displayName: user.displayName || user.email,
+                        email: user.email,
+                    });
+                    setTimeout(() => { dom.tokenBalanceBtn?.click(); }, 3000);
+                }
+            } catch (error) {
+                console.error("Failed to initialize new user profile:", error);
+            }
+        }
+
+        function renderQuickAccessPanel(widgetIds) {
+            if (!dom.quickAccessContainer) return;
+            dom.quickAccessContainer.innerHTML = '';
+            widgetIds.forEach(widgetId => {
+                const tool = allTools.find(t => t.id === widgetId);
+                if (tool) {
+                    const widget = document.createElement('div');
+                    widget.className = 'relative flex flex-col items-center p-2 rounded-md bg-gray-200 dark:bg-gray-700 cursor-grab active:cursor-grabbing select-none';
+                    widget.dataset.widgetId = tool.id;
+                    widget.draggable = true;
+                    widget.innerHTML = `
+                        <img src="${tool.icon}" class="w-full rounded-lg object-cover mb-2 aspect-[16/9] pointer-events-none" alt="${tool.name}">
+                        <span class="text-xs text-center pointer-events-none">${tool.name}</span>
+                        <button class="absolute top-1 right-1 h-5 w-5 bg-gray-500 text-white rounded-full flex items-center justify-center text-xs" data-remove-widget="${tool.id}">
+                            <img src="https://static.tildacdn.com/lib/icons/tilda/cross.svg" class="h-3 w-3 invert">
+                        </button>
+                    `;
+                    widget.addEventListener('click', (e) => {
+                        if (e.target.closest('[data-remove-widget]')) return;
+                        document.querySelectorAll('.content-section').forEach(s => s.classList.add('hidden'));
+                        const targetSection = document.getElementById(tool.target);
+                        if(targetSection) {
+                           targetSection.classList.remove('hidden');
+                           updateGenerationGrids(tool.target);
+                        }
+                    });
+                    dom.quickAccessContainer.appendChild(widget);
+                }
+            });
+        }
+        
+        async function updateQuickAccessInFirestore(newWidgetIds) {
+            if (currentUser && !currentUser.isAnonymous) {
+                const quickAccessRef = doc(db, `artifacts/${appId}/users/${currentUser.uid}/profile/quickAccess`);
+                try {
+                    await setDoc(quickAccessRef, { widgets: newWidgetIds });
+                } catch (error) {
+                    console.error("Failed to update quick access:", error);
+                }
+            }
+        }
+        
+        const updateVideoImageOptions = () => {
+            if (!dom.videoImageProportionsContainer) return;
+            const model = document.querySelector('input[name="videoImageModel"]:checked')?.value;
+            
+            const showProportions = model !== 'Midjourney V1';
+            dom.videoImageProportionsContainer.classList.toggle('hidden', !showProportions);
+            if(showProportions){
+                const visibleProportions = (model === 'VEO-3') ? ['16:9', '9:16'] : ['16:9', '9:16', '1:1', '4:3'];
+                let firstVisible = null;
+                document.querySelectorAll('input[name="videoImageRatio"]').forEach(radio => {
+                    const isVisible = visibleProportions.includes(radio.value);
+                    radio.parentElement.classList.toggle('hidden', !isVisible);
+                    if(isVisible && !firstVisible) firstVisible = radio;
+                });
+                 if(firstVisible && document.querySelector('input[name="videoImageRatio"]:checked').parentElement.classList.contains('hidden')) {
+                     firstVisible.checked = true;
+                 }
+            }
+            
+            let visibleLengths = [];
+            if (model === 'GEN-4') visibleLengths = ['5s', '10s'];
+            else if (model === 'VEO-3') visibleLengths = ['8s'];
+            else if (['Ray-2', 'Ray-2 flash'].includes(model)) visibleLengths = ['5s'];
+            let firstVisibleLen = null;
+            document.querySelectorAll('input[name="videoImageLength"]').forEach(radio => {
+                 const isVisible = visibleLengths.includes(radio.value);
+                 radio.parentElement.classList.toggle('hidden', !isVisible);
+                 if(isVisible && !firstVisibleLen) firstVisibleLen = radio;
+            });
+            if(firstVisibleLen && document.querySelector('input[name="videoImageLength"]:checked').parentElement.classList.contains('hidden')) {
+                 firstVisibleLen.checked = true;
+            }
+
+            dom.videoImageEndPhotoContainer.classList.toggle('hidden', !['Ray-2', 'Ray-2 flash'].includes(model));
+            dom.videoImagePromptLabel.querySelector('span').classList.toggle('hidden', model !== 'VEO-3');
+            dom.videoExtendButtonsContainer.classList.toggle('hidden', true); // Hide by default, show on success
+        };
+        
+        const updateVideoTextOptions = () => {
+            if(!dom.videoTextLengthContainer) return;
+            const model = document.querySelector('input[name="videoTextModel"]:checked')?.value;
+            
+            const visibleProportions = (model === 'VEO-3') ? ['16:9', '9:16'] : ['16:9', '9:16', '1:1', '4:3'];
+            let firstVisible = null;
+            document.querySelectorAll('input[name="videoTextRatio"]').forEach(radio => {
+                const isVisible = visibleProportions.includes(radio.value);
+                radio.parentElement.classList.toggle('hidden', !isVisible);
+                 if(isVisible && !firstVisible) firstVisible = radio;
+            });
+            if(firstVisible && document.querySelector('input[name="videoTextRatio"]:checked').parentElement.classList.contains('hidden')) {
+                 firstVisible.checked = true;
+            }
+
+            const visibleLengths = (model === 'GEN-4') ? ['5s', '10s'] : ['8s'];
+            let firstVisibleLen = null;
+             document.querySelectorAll('input[name="videoTextLength"]').forEach(radio => {
+                 const isVisible = visibleLengths.includes(radio.value);
+                 radio.parentElement.classList.toggle('hidden', !isVisible);
+                 if(isVisible && !firstVisibleLen) firstVisibleLen = radio;
+            });
+            if(firstVisibleLen && document.querySelector('input[name="videoTextLength"]:checked').parentElement.classList.contains('hidden')) {
+                 firstVisibleLen.checked = true;
+            }
+        };
+
+
+        onAuthStateChanged(auth, async (user) => {
+            const previousUserId = userId;
+            isAuthReady = true;
+            updateUI(user);
+            if (user) {
+                if(user.uid !== previousUserId) {
+                    lastGenerationResults = {}; // Clear cache on user change
+                }
+                setupFirestoreListeners(user.uid);
+            } else {
+                 lastGenerationResults = {};
+                 renderQuickAccessPanel([]); 
+                 renderHomepageFeed([]);
+            }
+        });
+        
+        function getDOMElementsForCacheKey(key) {
+            switch (key) {
+                case 'firstFrameSection': return { statusElement: dom.firstFrameStatus, resultElement: dom.firstFrameResult };
+                case 'generatePhotoSection': return { statusElement: dom.photoStatus, resultElement: dom.photoResult };
+                case 'videoTextSection': return { statusElement: dom.videoStatusFromText, resultElement: dom.videoResultFromText };
+                case 'videoImageSection': return { statusElement: dom.videoFromImageStatus, resultElement: dom.videoResultFromImage };
+                case 'removeBgSection': return { statusElement: dom.removeBgStatus, resultElement: dom.removeBgResult };
+                case 'freeTransformSection': return { statusElement: dom.freeTransformStatus, resultElement: dom.freeTransformResult };
+                default: return { statusElement: null, resultElement: null };
+            }
+        }
+
+
+        window.onload = () => {
+             dom = {
+                // Main layout
+                htmlElement: document.documentElement,
+                sidebar: document.getElementById('sidebar'),
+                backdrop: document.getElementById('backdrop'),
+                mainSection: document.getElementById('mainSection'),
+                profileSection: document.getElementById('profileSection'),
+            
+                // Header
+                menuToggleBtn: document.getElementById('menuToggleBtn'),
+                themeToggleBtn: document.getElementById('themeToggleBtn'),
+                tokenBalanceBtn: document.getElementById('tokenBalanceBtn'),
+                tokenMenu: document.getElementById('tokenMenu'),
+                tokenBalanceHeader: document.getElementById('tokenBalanceHeader'),
+                tokenBalanceDropdown: document.getElementById('tokenBalanceDropdown'),
+                tokenTypeDropdown: document.getElementById('tokenTypeDropdown'),
+                buyTokensDropdownBtn: document.getElementById('buyTokensDropdownBtn'),
+                loginBtn: document.getElementById('loginBtn'),
+                profileAvatarBtn: document.getElementById('profileAvatarBtn'),
+                profileAvatar: document.getElementById('profileAvatar'),
+                profileMenu: document.getElementById('profileMenu'),
+            
+                // Sidebar
+                sidebarPanelBtn: document.getElementById('sidebarPanelBtn'),
+                sidebarAiPhotoBtn: document.getElementById('sidebarAiPhotoBtn'),
+                photoSubmenu: document.getElementById('photoSubmenu'),
+                sidebarAiVideoBtn: document.getElementById('sidebarAiVideoBtn'),
+                videoSubmenu: document.getElementById('videoSubmenu'),
+            
+                // Main Section (Homepage)
+                quickAccessContainer: document.getElementById('quickAccessContainer'),
+                addQuickAccessBtn: document.getElementById('addQuickAccessBtn'),
+                recentGenerationsFeed: document.getElementById('recentGenerationsFeed'),
+                feedScrollLeftBtn: document.getElementById('feedScrollLeftBtn'),
+                feedScrollRightBtn: document.getElementById('feedScrollRightBtn'),
+                seeAllByCategoryBtn: document.getElementById('seeAllByCategoryBtn'),
+                allToolsPhotoContainer: document.getElementById('allToolsPhotoContainer'),
+                allToolsVideoContainer: document.getElementById('allToolsVideoContainer'),
+            
+                // Modals
+                loginModal: document.getElementById('loginModal'),
+                loginModalBackdrop: document.getElementById('loginModalBackdrop'),
+                closeLoginModalBtn: document.getElementById('closeLoginModalBtn'),
+                loginWithGoogleBtn: document.getElementById('loginWithGoogleBtn'),
+                loginWithYandexBtn: document.getElementById('loginWithYandexBtn'),
+                loginWithAppleBtn: document.getElementById('loginWithAppleBtn'),
+                loginWithEmailBtn: document.getElementById('loginWithEmailBtn'),
+                loginAsAdminBtn: document.getElementById('loginAsAdminBtn'),
+                emailLoginModal: document.getElementById('emailLoginModal'),
+                emailLoginModalBackdrop: document.getElementById('emailLoginModalBackdrop'),
+                closeEmailLoginModalBtn: document.getElementById('closeEmailLoginModalBtn'),
+                emailLoginForm: document.getElementById('emailLoginForm'),
+                emailInput: document.getElementById('emailInput'),
+                passwordInput: document.getElementById('passwordInput'),
+                emailAuthError: document.getElementById('emailAuthError'),
+                addWidgetModal: document.getElementById('addWidgetModal'),
+                addWidgetModalBackdrop: document.getElementById('addWidgetModalBackdrop'),
+                closeAddWidgetModalBtn: document.getElementById('closeAddWidgetModalBtn'),
+                addWidgetGrid: document.getElementById('addWidgetGrid'),
+            
+                // Profile Section
+                profileBtn: document.getElementById('profileBtn'),
+                buyTokensBtnInMenu: document.getElementById('buyTokensBtnInMenu'),
+                logoutBtnInMenu: document.getElementById('logoutBtnInMenu'),
+                profileAvatarDisplay: document.getElementById('profileAvatarDisplay'),
+                userProfileName: document.getElementById('userProfileName'),
+                avatarUpload: document.getElementById('avatarUpload'),
+                tokenBalanceProfile: document.getElementById('tokenBalanceProfile'),
+                purchaseTokensInput: document.getElementById('purchaseTokensInput'),
+                purchaseSummary: document.getElementById('purchaseSummary'),
+                buyTokensBtn: document.getElementById('buyTokensBtn'),
+                profilePhotoGenerations: document.getElementById('profilePhotoGenerations'),
+                profileVideoGenerations: document.getElementById('profileVideoGenerations'),
+            
+                // Admin Panel
+                adminPanelContainer: document.getElementById('adminPanelContainer'),
+                adminTabs: document.getElementById('adminTabs'),
+                adminUsersTab: document.getElementById('adminUsersTab'),
+                adminBroadcastTab: document.getElementById('adminBroadcastTab'),
+                adminUserSearchInput: document.getElementById('adminUserSearchInput'),
+                adminUserSearchBtn: document.getElementById('adminUserSearchBtn'),
+                adminUserInfo: document.getElementById('adminUserInfo'),
+                adminUserRequests: document.getElementById('adminUserRequests'),
+                adminBroadcastMessage: document.getElementById('adminBroadcastMessage'),
+                adminSendBroadcastBtn: document.getElementById('adminSendBroadcastBtn'),
+
+                // Tool Sections
+                generatePhotoSection: document.getElementById('generatePhotoSection'),
+                photoStatus: document.getElementById('photoStatus'),
+                photoResult: document.getElementById('photoResult'),
+                removeBgSection: document.getElementById('removeBgSection'),
+                replaceBgSection: document.getElementById('replaceBgSection'),
+                replaceObjectSection: document.getElementById('replaceObjectSection'),
+                recolorObjectSection: document.getElementById('recolorObjectSection'),
+                expandImageSection: document.getElementById('expandImageSection'),
+                upscaleImageSection: document.getElementById('upscaleImageSection'),
+                enhanceLightSection: document.getElementById('enhanceLightSection'),
+                addShadowSection: document.getElementById('addShadowSection'),
+                freeTransformSection: document.getElementById('freeTransformSection'),
+                videoTextSection: document.getElementById('videoTextSection'),
+                videoImageSection: document.getElementById('videoImageSection'),
+                firstFrameSection: document.getElementById('firstFrameSection'),
+
+                // --- First Frame Section ---
+                firstFrameTextBtn: document.getElementById('firstFrameTextBtn'),
+                firstFrameImageBtn: document.getElementById('firstFrameImageBtn'),
+                firstFrameBlendBtn: document.getElementById('firstFrameBlendBtn'),
+                firstFrameTextContent: document.getElementById('firstFrameTextContent'),
+                firstFrameImageContent: document.getElementById('firstFrameImageContent'),
+                firstFrameBlendContent: document.getElementById('firstFrameBlendContent'),
+                firstFrameTextInput: document.getElementById('firstFrameTextInput'),
+                generateFirstFrameTextBtn: document.getElementById('generateFirstFrameTextBtn'),
+                firstFrameImageUpload: document.getElementById('firstFrameImageUpload'),
+                firstFrameImagePreview: document.getElementById('firstFrameImagePreview'),
+                firstFrameImageInput: document.getElementById('firstFrameImageInput'),
+                generateFirstFrameImageBtn: document.getElementById('generateFirstFrameImageBtn'),
+                firstFrameBlendImage1: document.getElementById('firstFrameBlendImage1'),
+                firstFrameBlendPreview1: document.getElementById('firstFrameBlendPreview1'),
+                firstFrameBlendImage2: document.getElementById('firstFrameBlendImage2'),
+                firstFrameBlendPreview2: document.getElementById('firstFrameBlendPreview2'),
+                firstFrameBlendInput: document.getElementById('firstFrameBlendInput'),
+                generateFirstFrameBlendBtn: document.getElementById('generateFirstFrameBlendBtn'),
+                firstFrameStatus: document.getElementById('firstFrameStatus'),
+                firstFrameResult: document.getElementById('firstFrameResult'),
+                
+                // --- Generate Photo Section ---
+                generatePhotoTextBtn: document.getElementById('generatePhotoTextBtn'),
+                generatePhotoImageBtn: document.getElementById('generatePhotoImageBtn'),
+                generatePhotoBlendBtn: document.getElementById('generatePhotoBlendBtn'),
+                generatePhotoTextContent: document.getElementById('generatePhotoTextContent'),
+                generatePhotoImageContent: document.getElementById('generatePhotoImageContent'),
+                generatePhotoBlendContent: document.getElementById('generatePhotoBlendContent'),
+                generatePhotoTextInput: document.getElementById('generatePhotoTextInput'),
+                generatePhotoFromTextBtn: document.getElementById('generatePhotoFromTextBtn'),
+                generatePhotoImageUpload: document.getElementById('generatePhotoImageUpload'),
+                generatePhotoImagePreview: document.getElementById('generatePhotoImagePreview'),
+                generatePhotoImageInput: document.getElementById('generatePhotoImageInput'),
+                generatePhotoFromImageBtn: document.getElementById('generatePhotoFromImageBtn'),
+                generatePhotoBlendImage1: document.getElementById('generatePhotoBlendImage1'),
+                generatePhotoBlendPreview1: document.getElementById('generatePhotoBlendPreview1'),
+                generatePhotoBlendImage2: document.getElementById('generatePhotoBlendImage2'),
+                generatePhotoBlendPreview2: document.getElementById('generatePhotoBlendPreview2'),
+                generatePhotoBlendInput: document.getElementById('generatePhotoBlendInput'),
+                generatePhotoFromBlendBtn: document.getElementById('generatePhotoFromBlendBtn'),
+
+                 // --- Video Sections ---
+                videoStatusFromText: document.getElementById('videoStatusFromText'),
+                videoResultFromText: document.getElementById('videoResultFromText'),
+                videoFromImageStatus: document.getElementById('videoFromImageStatus'),
+                videoResultFromImage: document.getElementById('videoResultFromImage'),
+                videoTextInput: document.getElementById('videoTextInput'),
+                generateVideoFromTextBtn: document.getElementById('generateVideoFromTextBtn'),
+                videoImageInput: document.getElementById('videoImageInput'),
+                imageUploadVideo: document.getElementById('imageUploadVideo'),
+                imagePreviewVideo: document.getElementById('imagePreviewVideo'),
+                generateVideoFromImageBtn: document.getElementById('generateVideoFromImageBtn'),
+                videoImageProportionsContainer: document.getElementById('videoImageProportionsContainer'),
+                videoImageEndPhotoContainer: document.getElementById('videoImageEndPhotoContainer'),
+                videoImagePromptLabel: document.getElementById('videoImagePromptLabel'),
+                videoExtendButtonsContainer: document.getElementById('videoExtendButtonsContainer'),
+                videoTextLengthContainer: document.getElementById('videoTextLengthContainer'),
+
+                // --- Remove BG Section ---
+                removeBgUpload: document.getElementById('removeBgUpload'),
+                removeBgPreview: document.getElementById('removeBgPreview'),
+                removeBgBtn: document.getElementById('removeBgBtn'),
+                removeBgStatus: document.getElementById('removeBgStatus'),
+                removeBgResult: document.getElementById('removeBgResult'),
+
+                 // --- Free Transform Section ---
+                freeTransformUpload: document.getElementById('freeTransformUpload'),
+                freeTransformCanvasContainer: document.getElementById('freeTransformCanvasContainer'),
+                freeTransformPrompt: document.getElementById('freeTransformPrompt'),
+                generateFreeTransformBtn: document.getElementById('generateFreeTransformBtn'),
+                freeTransformStatus: document.getElementById('freeTransformStatus'),
+                freeTransformResult: document.getElementById('freeTransformResult'),
+             };
+            
+            dom.themeToggleBtn?.addEventListener('click', () => {
+                dom.htmlElement.classList.toggle('dark');
+                localStorage.setItem('theme', dom.htmlElement.classList.contains('dark') ? 'dark' : 'light');
+            });
+
+            dom.menuToggleBtn?.addEventListener('click', () => {
+                dom.sidebar?.classList.toggle('-translate-x-full');
+                dom.backdrop?.classList.toggle('hidden');
+            });
+            dom.backdrop?.addEventListener('click', () => {
+                dom.sidebar?.classList.add('-translate-x-full');
+                dom.backdrop?.classList.add('hidden');
+                dom.photoSubmenu?.classList.add('hidden');
+                dom.videoSubmenu?.classList.add('hidden');
+            });
+
+            const openLoginModal = () => dom.loginModal.classList.remove('hidden');
+            const closeLoginModal = () => dom.loginModal.classList.add('hidden');
+            const openEmailModal = () => dom.emailLoginModal.classList.remove('hidden');
+            const closeEmailModal = () => dom.emailLoginModal.classList.add('hidden');
+            dom.loginBtn?.addEventListener('click', openLoginModal);
+            dom.closeLoginModalBtn?.addEventListener('click', closeLoginModal);
+            dom.loginModalBackdrop?.addEventListener('click', closeLoginModal);
+            dom.loginWithEmailBtn?.addEventListener('click', () => { closeLoginModal(); openEmailModal(); });
+            dom.closeEmailLoginModalBtn?.addEventListener('click', closeEmailModal);
+            dom.emailLoginModalBackdrop?.addEventListener('click', closeEmailModal);
+
+            
+            const signInWithProvider = async (provider) => {
+                try {
+                    const result = await signInWithPopup(auth, provider);
+                    const { isNewUser } = getAdditionalUserInfo(result);
+                    if (isNewUser) {
+                        await handleNewUser(result.user);
+                    }
+                    closeLoginModal();
+                } catch (error) {
+                    console.error("OAuth sign-in error:", error);
+                    showModal({ title: 'Ошибка входа', content: `Ошибка входа: ${error.message}` });
+                }
+            };
+            
+            dom.loginWithGoogleBtn?.addEventListener('click', () => signInWithProvider(new GoogleAuthProvider()));
+            dom.loginWithYandexBtn?.addEventListener('click', () => signInWithProvider(new OAuthProvider('yandex.com')));
+            dom.loginWithAppleBtn?.addEventListener('click', () => signInWithProvider(new OAuthProvider('apple.com')));
+            dom.loginAsAdminBtn?.addEventListener('click', async () => {
+                if (initialAuthToken) {
+                    try {
+                        const result = await signInWithCustomToken(auth, initialAuthToken);
+                        isAdmin = true;
+                        updateUI(result.user);
+                        closeLoginModal();
+                    } catch (error) {
+                        console.error("Admin sign-in error:", error);
+                        showModal({ title: 'Ошибка', content: `Ошибка входа администратора: ${error.message}` });
+                    }
+                } else {
+                    showModal({ title: 'Недоступно', content: "Вход для администратора в данный момент недоступен." });
+                }
+            });
+            dom.emailLoginForm?.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const email = dom.emailInput.value;
+                const password = dom.passwordInput.value;
+                try {
+                    const result = await signInWithEmailAndPassword(auth, email, password);
+                    closeEmailModal();
+                } catch (error) {
+                    if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
+                        try {
+                            const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                            await handleNewUser(userCredential.user);
+                            closeEmailModal();
+                        } catch (createError) {
+                             showModal({ title: 'Ошибка', content: `Ошибка регистрации: ${createError.message}` });
+                        }
+                    } else {
+                        showModal({ title: 'Ошибка', content: `Ошибка входа: ${error.message}` });
+                    }
+                }
+            });
+
+
+            allTools.forEach(tool => {
+                 const container = tool.category === 'video' ? dom.allToolsVideoContainer : dom.allToolsPhotoContainer;
+                const toolEl = document.createElement('button');
+                toolEl.className = 'flex flex-col items-center p-2 rounded-md hover:bg-gray-300 dark:hover:bg-gray-700';
+                toolEl.dataset.targetSection = tool.target;
+                toolEl.innerHTML = `
+                    <img src="${tool.icon}" class="w-full rounded-lg object-cover mb-2 aspect-[16/9]" alt="${tool.name}">
+                    <span class="text-xs text-center">${tool.name}</span>
+                `;
+                container.appendChild(toolEl);
+            });
+
+            dom.sidebarAiPhotoBtn?.addEventListener('click', (e) => { e.stopPropagation(); dom.photoSubmenu?.classList.toggle('hidden'); dom.videoSubmenu?.classList.add('hidden'); });
+            dom.sidebarAiVideoBtn?.addEventListener('click', (e) => { e.stopPropagation(); dom.videoSubmenu?.classList.toggle('hidden'); dom.photoSubmenu?.classList.add('hidden'); });
+            
+            let draggedItem = null;
+            dom.quickAccessContainer.addEventListener('dragstart', e => {
+                draggedItem = e.target.closest('[data-widget-id]');
+                setTimeout(() => { if (draggedItem) draggedItem.style.opacity = '0.5'; }, 0);
+            });
+            dom.quickAccessContainer.addEventListener('dragend', () => {
+                setTimeout(() => {
+                    if (draggedItem) draggedItem.style.opacity = '1';
+                    draggedItem = null;
+                }, 0);
+                const newOrder = [...dom.quickAccessContainer.querySelectorAll('[data-widget-id]')].map(w => w.dataset.widgetId);
+                quickAccessWidgets = newOrder;
+                updateQuickAccessInFirestore(newOrder);
+            });
+            dom.quickAccessContainer.addEventListener('dragover', e => e.preventDefault());
+            dom.quickAccessContainer.addEventListener('drop', e => {
+                e.preventDefault();
+                const target = e.target.closest('[data-widget-id]');
+                if (target && draggedItem && target !== draggedItem) {
+                    const rect = target.getBoundingClientRect();
+                    const offsetX = e.clientX - rect.left;
+                    if (offsetX > rect.width / 2) {
+                        target.parentNode.insertBefore(draggedItem, target.nextSibling);
+                    } else {
+                         target.parentNode.insertBefore(draggedItem, target);
+                    }
+                }
+            });
+
+            dom.addQuickAccessBtn.addEventListener('click', () => {
+                if (!currentUser || currentUser.isAnonymous) return showModal({ title: 'Требуется вход', content: "Пожалуйста, войдите, чтобы настроить быстрый доступ." });
+                dom.addWidgetGrid.innerHTML = '';
+                allTools.forEach(tool => {
+                    const isAdded = quickAccessWidgets.includes(tool.id);
+                    const toolEl = document.createElement('button');
+                    toolEl.className = 'flex flex-col items-center p-2 rounded-md hover:bg-gray-300 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed';
+                    toolEl.disabled = isAdded;
+                    toolEl.dataset.toolId = tool.id;
+                    toolEl.innerHTML = `<img src="${tool.icon}" class="w-full rounded-lg object-cover mb-2 aspect-[16/9]" alt="${tool.name}"><span class="text-xs text-center">${tool.name}</span>`;
+                    dom.addWidgetGrid.appendChild(toolEl);
+                });
+                dom.addWidgetModal.classList.remove('hidden');
+            });
+
+            const closeAddWidgetModal = () => dom.addWidgetModal.classList.add('hidden');
+            dom.closeAddWidgetModalBtn.addEventListener('click', closeAddWidgetModal);
+            dom.addWidgetModalBackdrop.addEventListener('click', closeAddWidgetModal);
+
+            dom.addWidgetGrid.addEventListener('click', e => {
+                const targetButton = e.target.closest('button[data-tool-id]');
+                if (targetButton) {
+                    const toolId = targetButton.dataset.toolId;
+                    if (!quickAccessWidgets.includes(toolId)) {
+                        quickAccessWidgets.push(toolId);
+                        updateQuickAccessInFirestore(quickAccessWidgets);
+                    }
+                    closeAddWidgetModal();
+                }
+            });
+
+            dom.quickAccessContainer.addEventListener('click', e => {
+                const removeBtn = e.target.closest('[data-remove-widget]');
+                if (removeBtn) {
+                    const widgetIdToRemove = removeBtn.dataset.removeWidget;
+                    quickAccessWidgets = quickAccessWidgets.filter(id => id !== widgetIdToRemove);
+                    updateQuickAccessInFirestore(quickAccessWidgets);
+                }
+            });
+
+            dom.tokenBalanceBtn.addEventListener('click', e => { e.stopPropagation(); dom.tokenMenu.classList.toggle('hidden'); });
+            dom.buyTokensDropdownBtn.addEventListener('click', () => { dom.tokenMenu.classList.add('hidden'); document.querySelectorAll('.content-section').forEach(s => s.classList.add('hidden')); dom.profileSection.classList.remove('hidden'); });
+            dom.profileAvatarBtn?.addEventListener('click', (e) => { e.stopPropagation(); dom.profileMenu?.classList.toggle('hidden'); });
+            dom.logoutBtnInMenu?.addEventListener('click', async () => {
+                try {
+                    await signOut(auth);
+                    isAdmin = false;
+                    dom.profileMenu?.classList.add('hidden');
+                    document.querySelectorAll('.content-section').forEach(s => s.classList.add('hidden'));
+                    dom.mainSection.classList.remove('hidden');
+                } catch (error) {
+                    console.error("Sign out error:", error);
+                    showModal({ title: "Ошибка", content: "Не удалось выйти из аккаунта." });
+                }
+            });
+
+            window.addEventListener('click', (event) => {
+                 if (dom.profileMenu && !dom.profileMenu.classList.contains('hidden') && !dom.profileAvatarBtn.contains(event.target)) { dom.profileMenu.classList.add('hidden'); }
+                 if (dom.tokenMenu && !dom.tokenMenu.classList.contains('hidden') && !dom.tokenBalanceBtn.contains(event.target)) { dom.tokenMenu.classList.add('hidden'); }
+                 if (!event.target.closest('#sidebar') && window.innerWidth >= 1024) {
+                     dom.photoSubmenu?.classList.add('hidden');
+                     dom.videoSubmenu?.classList.add('hidden');
+                 }
+            });
+            
+            dom.purchaseTokensInput?.addEventListener('input', () => {
+                const amount = parseInt(dom.purchaseTokensInput.value, 10);
+                if (isNaN(amount) || amount < 250) { dom.purchaseSummary.innerHTML = ''; return; }
+                const basePrice = amount * 0.98;
+                let discount = 0;
+                if (amount >= 1500 && amount < 3000) discount = 0.05;
+                else if (amount >= 3000 && amount < 7000) discount = 0.07;
+                else if (amount >= 7000) discount = 0.10;
+                const finalPrice = basePrice * (1 - discount);
+                dom.purchaseSummary.innerHTML = `<p>Количество: ${amount} токенов</p><p>Базовая цена: ${basePrice.toFixed(2)} руб.</p><p>Скидка: ${(discount * 100)}%</p><p class="font-bold">Итого: ${finalPrice.toFixed(2)} руб.</p>`;
+            });
+            
+            document.querySelectorAll('.back-to-main-btn').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('.content-section').forEach(s => s.classList.add('hidden')); dom.mainSection.classList.remove('hidden'); }); });
+
+            document.addEventListener('click', e => {
+                const targetButton = e.target.closest('button[data-target-section]');
+                if(targetButton) {
+                    const targetId = targetButton.dataset.targetSection;
+                    
+                    document.querySelectorAll('.content-section').forEach(section => section.classList.add('hidden'));
+                    const targetSection = document.getElementById(targetId);
+                    
+                    if(targetSection) { 
+                        targetSection.classList.remove('hidden'); 
+                        updateGenerationGrids(targetId);
+                        
+                        const cacheKey = targetId;
+                        const { statusElement, resultElement } = getDOMElementsForCacheKey(cacheKey);
+                        const cachedResult = lastGenerationResults[cacheKey];
+
+                        if (cachedResult && cachedResult.status !== 'pending') {
+                            if (statusElement) statusElement.textContent = `Статус: ${cachedResult.status}`;
+                            if (resultElement && cachedResult.status === 'completed') {
+                                if (cachedResult.outputUrl) {
+                                    if (cachedResult.type === 'photo') resultElement.innerHTML = `<img src="${cachedResult.outputUrl}" class="mt-4 rounded-lg shadow-lg w-full max-w-lg mx-auto" alt="Generated Image">`;
+                                    else if (cachedResult.type === 'video') resultElement.innerHTML = `<video controls src="${cachedResult.outputUrl}" class="mt-4 rounded-lg shadow-lg w-full max-w-lg mx-auto"></video>`;
+                                } else if (cachedResult.outputText) {
+                                    resultElement.innerHTML = `<p class="mt-4 p-4 bg-gray-100 dark:bg-gray-700 rounded-lg">${cachedResult.outputText}</p>`;
+                                }
+                            }
+                        } else if (cachedResult && cachedResult.status === 'pending') {
+                             if (statusElement) statusElement.textContent = 'Обработка...';
+                             if (resultElement) resultElement.innerHTML = '<div class="flex justify-center items-center h-full"><div class="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-indigo-500"></div></div>';
+                        } else {
+                            if (statusElement) statusElement.textContent = '';
+                            if (resultElement) resultElement.innerHTML = '';
+                        }
+                    } 
+                    else { 
+                        document.getElementById('mainSection')?.classList.remove('hidden'); 
+                    }
+                    
+                    if(window.innerWidth < 1024) { dom.sidebar?.classList.add('-translate-x-full'); dom.backdrop?.classList.add('hidden'); }
+                    dom.photoSubmenu?.classList.add('hidden');
+                    dom.videoSubmenu?.classList.add('hidden');
+                }
+            });
+            
+            dom.seeAllByCategoryBtn.addEventListener('click', () => {
+                document.querySelectorAll('.content-section').forEach(s => s.classList.add('hidden'));
+                dom.profileSection.classList.remove('hidden');
+            });
+
+
+              dom.sidebarPanelBtn?.addEventListener('click', () => { document.querySelectorAll('.content-section').forEach(s => s.classList.add('hidden')); document.getElementById('mainSection')?.classList.remove('hidden'); dom.sidebar?.classList.add('-translate-x-full'); dom.backdrop?.classList.add('hidden'); });
+              
+            const setupTabs = (btnIds, contentIds, activeClass) => {
+                const tabs = btnIds.map(id => document.getElementById(id));
+                const contents = contentIds.map(id => document.getElementById(id));
+                
+                tabs.forEach((tab, index) => {
+                    tab?.addEventListener('click', () => {
+                        tabs.forEach(t => {
+                            if(t) {
+                                t.classList.remove(...activeClass.split(' '));
+                                t.classList.add('border-transparent', 'text-gray-500', 'hover:text-gray-700', 'hover:border-gray-300');
+                            }
+                         });
+                        tab.classList.add(...activeClass.split(' '));
+                        tab.classList.remove('border-transparent', 'text-gray-500', 'hover:text-gray-700', 'hover:border-gray-300');
+                        
+                        contents.forEach(content => content?.classList.add('hidden'));
+                        contents[index]?.classList.remove('hidden');
+                    });
+                });
+                if(tabs[0]) tabs[0].click();
+            };
+            
+            setupTabs(
+                ['firstFrameTextBtn', 'firstFrameImageBtn', 'firstFrameBlendBtn'],
+                ['firstFrameTextContent', 'firstFrameImageContent', 'firstFrameBlendContent'],
+                'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+            );
+            
+            setupTabs(
+                ['generatePhotoTextBtn', 'generatePhotoImageBtn', 'generatePhotoBlendBtn'],
+                ['generatePhotoTextContent', 'generatePhotoImageContent', 'generatePhotoBlendContent'],
+                'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+            );
+
+            // Generation from text
+            dom.generatePhotoFromTextBtn?.addEventListener('click', () => {
+                const prompt = dom.generatePhotoTextInput.value;
+                if (!prompt) return showModal({ title: 'Ошибка', content: "Пожалуйста, введите промпт."});
+                const ratio = document.querySelector('input[name="generatePhotoTextRatio"]:checked')?.value || '16:9';
+                createRequest({ type: 'photo', model: 'Gemini', source: 'generate_photo_text', inputData: { parts: [{ text: prompt }], ratio }, statusElement: dom.photoStatus, resultElement: dom.photoResult, cacheKey: 'generatePhotoSection' });
+            });
+
+            // Generation from image
+             dom.generatePhotoFromImageBtn?.addEventListener('click', async (e) => {
+                const substitutedUrl = e.currentTarget.dataset.substitutedUrl;
+                const file = dom.generatePhotoImageUpload.files[0];
+                const prompt = dom.generatePhotoImageInput.value;
+                const ratio = document.querySelector('input[name="generatePhotoImageRatio"]:checked')?.value || '16:9';
+                
+                if (!file && !substitutedUrl) return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите или подставьте фото." });
+
+                dom.photoStatus.textContent = 'Обработка изображения...';
+                try {
+                    let base64Data, mimeType;
+                    if (substitutedUrl) {
+                        base64Data = dataUrlToBase64(substitutedUrl);
+                        mimeType = substitutedUrl.match(/data:(.*);/)[1];
+                        delete e.currentTarget.dataset.substitutedUrl;
+                        dom.generatePhotoImagePreview.src = '';
+                        dom.generatePhotoImagePreview.classList.add('hidden');
+                        dom.generatePhotoImageUpload.value = '';
+                    } else {
+                        base64Data = await fileToDataUrl(file).then(dataUrlToBase64);
+                        mimeType = file.type;
+                    }
+                    const parts = [ { text: prompt || "Сгенерируй изображение на основе этого фото." }, { inlineData: { mimeType, data: base64Data } } ];
+                    createRequest({ type: 'photo', model: 'Gemini', source: 'generate_photo_image', inputData: { parts, ratio }, statusElement: dom.photoStatus, resultElement: dom.photoResult, cacheKey: 'generatePhotoSection' });
+                } catch(err) {
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файл.' });
+                    dom.photoStatus.textContent = '';
+                }
+            });
+            
+             dom.generatePhotoFromBlendBtn?.addEventListener('click', async () => {
+                const file1 = dom.generatePhotoBlendImage1.files[0];
+                const file2 = dom.generatePhotoBlendImage2.files[0];
+                const prompt = dom.generatePhotoBlendInput.value;
+                const ratio = document.querySelector('input[name="generatePhotoBlendRatio"]:checked')?.value || '16:9';
+                if (!file1 || !file2) return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите оба фото."});
+
+                dom.photoStatus.textContent = 'Конвертация файлов...';
+                try {
+                    const b64_1 = await fileToDataUrl(file1).then(dataUrlToBase64);
+                    const b64_2 = await fileToDataUrl(file2).then(dataUrlToBase64);
+                    const parts = [ { text: prompt || "Смешай эти два изображения." }, { inlineData: { mimeType: file1.type, data: b64_1 } }, { inlineData: { mimeType: file2.type, data: b64_2 } } ];
+                    createRequest({ type: 'photo', model: 'Gemini', source: 'generate_photo_blend', inputData: { parts, ratio }, statusElement: dom.photoStatus, resultElement: dom.photoResult, cacheKey: 'generatePhotoSection' });
+                } catch(e) { showModal({ title: 'Ошибка', content: 'Не удалось обработать файлы.'}); dom.photoStatus.textContent = ''; }
+            });
+
+            dom.generateFirstFrameTextBtn?.addEventListener('click', () => {
+                const prompt = dom.firstFrameTextInput.value;
+                const ratio = document.querySelector('input[name="firstFrameTextRatio"]:checked')?.value || '16:9';
+                if (!prompt) return showModal({ title: 'Ошибка', content: "Пожалуйста, введите промпт."});
+                createRequest({ type: 'photo', model: 'Gemini', source: 'first_frame_text', inputData: { parts: [{ text: prompt }], ratio }, statusElement: dom.firstFrameStatus, resultElement: dom.firstFrameResult, cacheKey: 'firstFrameSection' });
+            });
+
+            dom.generateFirstFrameImageBtn?.addEventListener('click', async (e) => {
+                const substitutedUrl = e.currentTarget.dataset.substitutedUrl;
+                const file = dom.firstFrameImageUpload.files[0];
+                const prompt = dom.firstFrameImageInput.value;
+                const ratio = document.querySelector('input[name="firstFrameImageRatio"]:checked')?.value || '16:9';
+                if (!file && !substitutedUrl) return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите или подставьте фото." });
+                
+                dom.firstFrameStatus.textContent = 'Обработка изображения...';
+                try {
+                    let base64Data, mimeType;
+                     if (substitutedUrl) {
+                        base64Data = dataUrlToBase64(substitutedUrl);
+                        mimeType = substitutedUrl.match(/data:(.*);/)[1];
+                        delete e.currentTarget.dataset.substitutedUrl;
+                        dom.firstFrameImagePreview.src = '';
+                        dom.firstFrameImagePreview.classList.add('hidden');
+                        dom.firstFrameImageUpload.value = '';
+                    } else {
+                        base64Data = await fileToDataUrl(file).then(dataUrlToBase64);
+                        mimeType = file.type;
+                    }
+                    const parts = [ { text: prompt || "Сгенерируй изображение на основе этого фото." }, { inlineData: { mimeType, data: base64Data } } ];
+                    createRequest({ type: 'photo', model: 'Gemini', source: 'first_frame_image', inputData: { parts, ratio }, statusElement: dom.firstFrameStatus, resultElement: dom.firstFrameResult, cacheKey: 'firstFrameSection' });
+                } catch(err) { showModal({ title: 'Ошибка', content: 'Не удалось обработать файл.' }); dom.firstFrameStatus.textContent = ''; }
+            });
+
+            dom.generateFirstFrameBlendBtn?.addEventListener('click', async () => {
+                const file1 = dom.firstFrameBlendImage1.files[0];
+                const file2 = dom.firstFrameBlendImage2.files[0];
+                const prompt = dom.firstFrameBlendInput.value;
+                const ratio = document.querySelector('input[name="firstFrameBlendRatio"]:checked')?.value || '16:9';
+                if (!file1 || !file2) return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите оба фото."});
+
+                dom.firstFrameStatus.textContent = 'Конвертация файлов...';
+                try {
+                    const b64_1 = await fileToDataUrl(file1).then(dataUrlToBase64);
+                    const b64_2 = await fileToDataUrl(file2).then(dataUrlToBase64);
+                    const parts = [ { text: prompt || "Смешай эти два изображения." }, { inlineData: { mimeType: file1.type, data: b64_1 } }, { inlineData: { mimeType: file2.type, data: b64_2 } } ];
+                    createRequest({ type: 'photo', model: 'Gemini', source: 'first_frame_blend', inputData: { parts, ratio }, statusElement: dom.firstFrameStatus, resultElement: dom.firstFrameResult, cacheKey: 'firstFrameSection' });
+                } catch(e) { showModal({ title: 'Ошибка', content: 'Не удалось обработать файлы.'}); dom.firstFrameStatus.textContent = ''; }
+            });
+
+            dom.generateVideoFromTextBtn?.addEventListener('click', () => {
+                const model = document.querySelector('input[name="videoTextModel"]:checked').value;
+                const prompt = dom.videoTextInput.value;
+                if(!prompt) return showModal({ title: 'Ошибка', content: 'Введите промпт.'});
+                createRequest({ type: 'video', model: model, source: 'text_to_video', inputData: { prompt }, statusElement: dom.videoStatusFromText, resultElement: dom.videoResultFromText, cacheKey: 'videoTextSection' });
+            });
+
+            dom.generateVideoFromImageBtn?.addEventListener('click', async (e) => {
+                const substitutedUrl = e.currentTarget.dataset.substitutedUrl;
+                const model = document.querySelector('input[name="videoImageModel"]:checked').value;
+                const prompt = dom.videoImageInput.value;
+                const file = dom.imageUploadVideo.files[0];
+                if(!file && !substitutedUrl) return showModal({ title: 'Ошибка', content: 'Загрузите или подставьте начальное фото.'});
+                if(model === 'VEO-3' && !prompt) return showModal({ title: 'Ошибка', content: 'Для модели VEO-3 промпт обязателен.'});
+
+                dom.videoFromImageStatus.textContent = 'Обработка изображения...';
+                 try {
+                     let base64Data, mimeType; // Mock data, since we don't send image to mock API
+                      if (substitutedUrl) {
+                        base64Data = dataUrlToBase64(substitutedUrl);
+                        mimeType = substitutedUrl.match(/data:(.*);/)[1];
+                        delete e.currentTarget.dataset.substitutedUrl;
+                        dom.imagePreviewVideo.src = '';
+                        dom.imagePreviewVideo.classList.add('hidden');
+                        dom.imageUploadVideo.value = '';
+                    } else {
+                        base64Data = await fileToDataUrl(file).then(dataUrlToBase64);
+                        mimeType = file.type;
+                    }
+                    createRequest({ type: 'video', model: model, source: 'photo_to_video', inputData: { prompt, base64Data, mimeType }, statusElement: dom.videoFromImageStatus, resultElement: dom.videoResultFromImage, cacheKey: 'videoImageSection' });
+                 } catch(err) {
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файл.' });
+                    dom.videoFromImageStatus.textContent = '';
+                }
+            });
+
+            dom.removeBgBtn?.addEventListener('click', async () => {
+                const file = dom.removeBgUpload.files[0];
+                if (!file) return showModal({ title: 'Ошибка', content: "Пожалуйста, загрузите фото." });
+                dom.removeBgStatus.textContent = 'Обработка изображения...';
+                try {
+                    const base64Data = await fileToDataUrl(file).then(dataUrlToBase64);
+                    const parts = [ { text: "remove the background, make the background transparent" }, { inlineData: { mimeType: file.type, data: base64Data } } ];
+                    createRequest({ type: 'photo', model: 'Gemini', source: 'remove_bg', inputData: { parts }, statusElement: dom.removeBgStatus, resultElement: dom.removeBgResult, cacheKey: 'removeBgSection' });
+                } catch(e) {
+                    showModal({ title: 'Ошибка', content: 'Не удалось обработать файл.'});
+                    dom.removeBgStatus.textContent = '';
+                }
+            });
+
+            const initFreeTransformCanvas = () => {
+                const container = dom.freeTransformCanvasContainer;
+                const fileInput = dom.freeTransformUpload;
+                let originalImageDataUrl = null;
+                
+                fileInput.addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        originalImageDataUrl = event.target.result;
+                        container.innerHTML = ''; // Clear previous
+                        const img = new Image();
+                        img.onload = () => {
+                            const canvas = document.createElement('canvas');
+                            canvas.className = "absolute top-0 left-0 cursor-crosshair";
+                            canvas.width = img.width;
+                            canvas.height = img.height;
+                            container.style.width = `${img.width}px`;
+                            container.style.height = `${img.height}px`;
+                            container.append(img, canvas);
+                            
+                            const ctx = canvas.getContext('2d');
+                            let isDrawing = false;
+                            ctx.strokeStyle = 'rgba(255, 0, 221, 0.7)';
+                            ctx.lineWidth = 30;
+                            ctx.lineCap = 'round';
+                            ctx.lineJoin = 'round';
+
+                            const getCoords = (e) => {
+                                const rect = canvas.getBoundingClientRect();
+                                const scaleX = canvas.width / rect.width;
+                                const scaleY = canvas.height / rect.height;
+                                const clientX = e.clientX || e.touches[0].clientX;
+                                const clientY = e.clientY || e.touches[0].clientY;
+                                return {
+                                    x: (clientX - rect.left) * scaleX,
+                                    y: (clientY - rect.top) * scaleY
+                                };
+                            };
+
+                            const startDrawing = (e) => {
+                                e.preventDefault();
+                                isDrawing = true;
+                                const { x, y } = getCoords(e);
+                                ctx.beginPath();
+                                ctx.moveTo(x, y);
+                            };
+
+                            const draw = (e) => {
+                                if (!isDrawing) return;
+                                e.preventDefault();
+                                const { x, y } = getCoords(e);
+                                ctx.lineTo(x, y);
+                                ctx.stroke();
+                            };
+
+                            const stopDrawing = () => {
+                                isDrawing = false;
+                                ctx.closePath();
+                            };
+
+                            canvas.addEventListener('mousedown', startDrawing);
+                            canvas.addEventListener('mousemove', draw);
+                            canvas.addEventListener('mouseup', stopDrawing);
+                            canvas.addEventListener('mouseout', stopDrawing);
+                            canvas.addEventListener('touchstart', startDrawing);
+                            canvas.addEventListener('touchmove', draw);
+                            canvas.addEventListener('touchend', stopDrawing);
+                        };
+                        img.src = originalImageDataUrl;
+                        img.className = "max-w-full h-auto block";
+                    };
+                    reader.readAsDataURL(file);
+                });
+
+                dom.generateFreeTransformBtn.addEventListener('click', () => {
+                    const canvas = container.querySelector('canvas');
+                    const prompt = dom.freeTransformPrompt.value;
+
+                    if (!originalImageDataUrl || !canvas) {
+                        showModal({ title: 'Ошибка', content: "Сначала загрузите изображение." });
+                        return;
+                    }
+                    if (!prompt) {
+                        showModal({ title: 'Ошибка', content: "Введите промпт для трансформации." });
+                        return;
+                    }
+                    
+                    const maskDataUrl = canvas.toDataURL('image/png');
+
+                    const parts = [
+                        { text: prompt },
+                        { inlineData: { mimeType: originalImageDataUrl.match(/data:(.*);/)[1], data: dataUrlToBase64(originalImageDataUrl) } },
+                        { inlineData: { mimeType: 'image/png', data: dataUrlToBase64(maskDataUrl) } }
+                    ];
+
+                    createRequest({
+                        type: 'photo',
+                        model: 'Gemini',
+                        source: 'free_transform',
+                        inputData: { parts },
+                        statusElement: dom.freeTransformStatus,
+                        resultElement: dom.freeTransformResult,
+                        cacheKey: 'freeTransformSection'
+                    });
+                });
+            };
+            initFreeTransformCanvas();
+            
+            // ADMIN PANEL LOGIC
+            const setupAdminPanel = () => {
+                dom.adminTabs.addEventListener('click', e => {
+                    const targetTab = e.target.closest('.admin-tab');
+                    if (!targetTab) return;
+                    
+                    document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('border-indigo-500', 'text-indigo-600'));
+                    document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.add('hidden'));
+
+                    targetTab.classList.add('border-indigo-500', 'text-indigo-600');
+                    document.getElementById(`admin${targetTab.dataset.tab.charAt(0).toUpperCase() + targetTab.dataset.tab.slice(1)}Tab`).classList.remove('hidden');
+                });
+
+                dom.adminUserSearchBtn.addEventListener('click', async () => {
+                    const searchTerm = dom.adminUserSearchInput.value.trim();
+                    if(!searchTerm) return;
+
+                    dom.adminUserInfo.innerHTML = 'Поиск...';
+                    dom.adminUserRequests.innerHTML = '';
+                    
+                    try {
+                        const userRef = doc(db, `artifacts/${appId}/users/${searchTerm}/profile/data`);
+                        const userDoc = await getDoc(userRef);
+
+                        if(!userDoc.exists()) {
+                            dom.adminUserInfo.innerHTML = '<p>Пользователь с таким UID не найден.</p>';
+                            return;
+                        }
+
+                        const userData = userDoc.data();
+                        dom.adminUserInfo.innerHTML = `
+                            <p><strong>UID:</strong> ${searchTerm}</p>
+                            <p><strong>Email:</strong> ${userData.email || 'Нет данных'}</p>
+                            <p><strong>Имя:</strong> ${userData.displayName || 'Нет данных'}</p>
+                            <p><strong>Токены:</strong> ${userData.tokens ?? 'N/A'}</p>
+                            <p><strong>Бесплатные запросы:</strong> ${userData.freeRequests ?? 'N/A'}</p>
+                            <p><strong>Дата регистрации:</strong> ${userData.createdAt?.toDate().toLocaleString('ru-RU') || 'Нет данных'}</p>
+                        `;
+
+                        // Fetch requests
+                        const requestsRef = collection(db, `artifacts/${appId}/users/${searchTerm}/requests`);
+                        const requestsQuery = query(requestsRef, orderBy('createdAt', 'desc'), limit(20));
+                        const requestsSnapshot = await getDocs(requestsQuery);
+
+                        if(requestsSnapshot.empty) {
+                            dom.adminUserRequests.innerHTML = '<p>У пользователя нет запросов.</p>';
+                            return;
+                        }
+                        
+                        let requestsHtml = requestsSnapshot.docs.map(doc => {
+                             const data = doc.data();
+                             return `<div class="p-2 border-b dark:border-gray-600 flex justify-between items-center">
+                                 <div>
+                                     <p class="text-xs">${data.createdAt?.toDate().toLocaleString('ru-RU')}</p>
+                                     <p class="text-sm font-mono">${data.type} - ${data.model}</p>
+                                     <p class="text-xs text-gray-500">${data.prompt || 'Без промпта'}</p>
+                                 </div>
+                                 <button data-user-id="${searchTerm}" data-request-id="${doc.id}" class="delete-request-btn text-red-500 hover:text-red-700 text-xs">Удалить</button>
+                             </div>`
+                        }).join('');
+                        dom.adminUserRequests.innerHTML = requestsHtml;
+
+                    } catch(e) {
+                         dom.adminUserInfo.innerHTML = `<p class="text-red-500">Ошибка при поиске: ${e.message}</p>`;
+                    }
+                });
+
+                dom.adminUserRequests.addEventListener('click', async e => {
+                    if (e.target.classList.contains('delete-request-btn')) {
+                        const userIdToDelete = e.target.dataset.userId;
+                        const requestId = e.target.dataset.requestId;
+                        showModal({
+                            title: 'Подтверждение',
+                            content: `Вы уверены, что хотите удалить запрос ${requestId}?`,
+                            buttons: [
+                                {
+                                    text: 'Отмена',
+                                    className: 'bg-gray-500 hover:bg-gray-600 text-white'
+                                },
+                                {
+                                    text: 'Да, удалить',
+                                    className: 'bg-red-600 hover:bg-red-700 text-white',
+                                    onClick: async () => {
+                                        try {
+                                            await deleteDoc(doc(db, `artifacts/${appId}/users/${userIdToDelete}/requests`, requestId));
+                                            showModal({ title: 'Успех', content: 'Запрос удален.' });
+                                            e.target.parentElement.remove();
+                                        } catch (err) {
+                                            showModal({ title: 'Ошибка', content: `Ошибка удаления: ${err.message}` });
+                                        }
+                                    }
+                                }
+                            ]
+                        });
+                    }
+                });
+
+                dom.adminSendBroadcastBtn.addEventListener('click', async () => {
+                    const message = dom.adminBroadcastMessage.value.trim();
+                    if (!message) return showModal({ title: 'Ошибка', content: 'Сообщение не может быть пустым.'});
+                    
+                    try {
+                        const broadcastRef = doc(db, `artifacts/${appId}/public/data/broadcast/current`);
+                        await setDoc(broadcastRef, {
+                            text: message,
+                            createdAt: serverTimestamp()
+                        });
+                        showModal({ title: 'Успех', content: 'Рассылка отправлена!'});
+                        dom.adminBroadcastMessage.value = '';
+                    } catch (e) {
+                        showModal({ title: 'Ошибка', content: `Ошибка отправки: ${e.message}`});
+                    }
+                });
+            };
+            setupAdminPanel();
+
+            dom.feedScrollLeftBtn.addEventListener('click', () => {
+                dom.recentGenerationsFeed.scrollBy({ left: -200, behavior: 'smooth' });
+            });
+            dom.feedScrollRightBtn.addEventListener('click', () => {
+                dom.recentGenerationsFeed.scrollBy({ left: 200, behavior: 'smooth' });
+            });
+
+
+            // Initial UI setup
+            document.querySelectorAll('input[name="videoImageModel"]').forEach(radio => radio.addEventListener('change', updateVideoImageOptions));
+            document.querySelectorAll('input[name="videoTextModel"]').forEach(radio => radio.addEventListener('change', updateVideoTextOptions));
+            updateVideoImageOptions();
+            updateVideoTextOptions();
+
+            // Setup image previews for all file inputs
+            const setupImagePreview = (inputId, previewId) => {
+                const input = document.getElementById(inputId);
+                const preview = document.getElementById(previewId);
+                if (!input || !preview) return;
+                input.addEventListener('change', () => {
+                    const file = input.files[0];
+                    if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                            preview.src = e.target.result;
+                            preview.classList.remove('hidden');
+                        };
+                        reader.readAsDataURL(file);
+                    } else {
+                        preview.classList.add('hidden');
+                    }
+                });
+            };
+            
+            setupImagePreview('firstFrameImageUpload', 'firstFrameImagePreview');
+            setupImagePreview('firstFrameBlendImage1', 'firstFrameBlendPreview1');
+            setupImagePreview('firstFrameBlendImage2', 'firstFrameBlendPreview2');
+            setupImagePreview('generatePhotoImageUpload', 'generatePhotoImagePreview');
+            setupImagePreview('generatePhotoBlendImage1', 'generatePhotoBlendPreview1');
+            setupImagePreview('generatePhotoBlendImage2', 'generatePhotoBlendPreview2');
+            setupImagePreview('imageUploadVideo', 'imagePreviewVideo');
+            setupImagePreview('removeBgUpload', 'removeBgPreview');
+        };
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .dark .invert-dark { filter: invert(1); }
+        .submenu-scroll::-webkit-scrollbar { width: 8px; }
+        .submenu-scroll::-webkit-scrollbar-track { background: transparent; }
+        .submenu-scroll::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 4px; }
+        #recentGenerationsFeed::-webkit-scrollbar { height: 8px; }
+        #recentGenerationsFeed::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 4px; }
+        .generation-grid::-webkit-scrollbar { height: 8px; }
+        .generation-grid::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 4px; }
+        .upload-drop-zone {
+            border: 2px dashed #ccc;
+            border-radius: 0.5rem;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .upload-drop-zone.dragover {
+            background-color: #e9e9e9;
+        }
+        .dark .upload-drop-zone.dragover {
+            background-color: #374151;
+        }
+        .lg\:block .submenu-scroll {
+            display: block !important;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-900 dark:bg-gray-900 dark:text-gray-100 flex min-h-screen">
+    
+    <header class="fixed top-0 left-0 w-full bg-white text-gray-900 dark:bg-gray-800 dark:text-gray-100 z-50 p-2 sm:p-4 flex justify-between items-center shadow-md">
+        <div class="flex items-center space-x-2 sm:space-x-4">
+            <button id="menuToggleBtn" class="lg:hidden p-2 rounded-full"><img src="https://static.tildacdn.com/tild6666-3038-4630-b764-373238383139/IMG_7222.png" alt="Menu" class="h-6 w-6 dark:invert"></button>
+            <img src="https://static.tildacdn.com/tild6539-3531-4635-a237-393865653433/5111900862947154908_.gif" alt="KolerskyAI Logo" class="h-8 sm:h-10 w-auto" style="border-radius: 10px;">
+        </div>
+        
+        <div class="flex items-center space-x-1 sm:space-x-4 relative">
+            <button id="themeToggleBtn" class="p-2 rounded-full"><img src="https://static.tildacdn.com/tild3338-6537-4233-b665-653039373131/IMG_7225.png" alt="Theme Toggle" class="h-5 w-5 sm:h-6 sm:w-6 dark:invert"></button>
+            
+            <div class="relative">
+                <button id="tokenBalanceBtn" class="flex items-center space-x-1 sm:space-x-2 px-2 py-1 sm:px-3 sm:py-2 bg-gray-200 dark:bg-gray-700 rounded-full">
+                    <img src="https://static.tildacdn.com/lib/icons/tilda/coins_money_benefit_cost.svg" class="h-4 w-4 sm:h-5 sm:w-5 dark:invert">
+                    <span id="tokenBalanceHeader" class="font-semibold text-xs sm:text-sm">0</span>
+                </button>
+                <div id="tokenMenu" class="origin-top-right absolute right-0 mt-2 w-64 rounded-md shadow-lg bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 hidden p-4">
+                    <p class="text-center">У вас <span id="tokenBalanceDropdown" class="font-bold">0</span> <span id="tokenTypeDropdown">токенов</span></p>
+                    <button id="buyTokensDropdownBtn" class="mt-4 w-full text-center py-2 px-4 rounded-md shadow-sm text-sm font-medium text-white bg-teal-600 hover:bg-teal-700">Пополнить баланс</button>
+                </div>
+            </div>
+
+            <button id="loginBtn" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 transition-colors duration-200 text-sm">Войти</button>
+            
+            <div class="relative">
+                <button id="profileAvatarBtn" class="p-1 rounded-full hidden"><img id="profileAvatar" class="h-7 w-7 sm:h-8 sm:w-8 rounded-full" src="https://placehold.co/100x100/A0AEC0/ffffff?text=U" alt="Аватар"></button>
+                <div id="profileMenu" class="origin-top-right absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-gray-700 ring-1 ring-black ring-opacity-5 hidden">
+                    <div class="py-1">
+                        <button id="profileBtn" data-target-section="profileSection" class="block w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-gray-600">Мой профиль</button>
+                        <button id="buyTokensBtnInMenu" data-target-section="profileSection" class="block w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-gray-600">Пополнение</button>
+                        <button id="logoutBtnInMenu" class="block w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-gray-600">Выйти</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+    
+     <div id="loginModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4 hidden">
+         <div id="loginModalBackdrop" class="fixed inset-0 bg-black bg-opacity-50"></div>
+         <div class="relative bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-sm p-6 space-y-4">
+               <button id="closeLoginModalBtn" class="absolute top-2 right-2 p-2 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200">&times;</button>
+            <h2 class="text-xl font-bold text-center">Вход или регистрация</h2>
+               <div class="flex flex-col space-y-3">
+                   <button id="loginWithGoogleBtn" class="w-full flex items-center justify-center gap-3 py-2 px-4 border rounded-md hover:bg-gray-100 dark:hover:bg-gray-700"><i class="fab fa-google"></i> Продолжить с Google</button>
+                   <button id="loginWithYandexBtn" class="w-full flex items-center justify-center gap-3 py-2 px-4 border rounded-md hover:bg-gray-100 dark:hover:bg-gray-700"><i class="fab fa-yandex"></i> Продолжить с Yandex ID</button>
+                   <button id="loginWithAppleBtn" class="w-full flex items-center justify-center gap-3 py-2 px-4 border rounded-md hover:bg-gray-100 dark:hover:bg-gray-700"><i class="fab fa-apple"></i> Продолжить с Apple</button>
+                   <button id="loginWithEmailBtn" class="w-full flex items-center justify-center gap-3 py-2 px-4 border rounded-md hover:bg-gray-100 dark:hover:bg-gray-700"><i class="fas fa-envelope"></i> Продолжить с почтой</button>
+                   <button id="loginAsAdminBtn" class="w-full flex items-center justify-center gap-3 py-2 px-4 border rounded-md bg-red-600 text-white hover:bg-red-700"><i class="fas fa-user-shield"></i> Временный вход для Администратора</button>
+               </div>
+         </div>
+     </div>
+    <div id="emailLoginModal" class="fixed inset-0 z-[70] flex items-center justify-center p-4 hidden">
+        <div id="emailLoginModalBackdrop" class="fixed inset-0 bg-black bg-opacity-50"></div>
+        <div class="relative bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-sm p-6 space-y-4">
+            <button id="closeEmailLoginModalBtn" class="absolute top-2 right-2 p-2 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200">&times;</button>
+            <h2 class="text-xl font-bold text-center">Вход по почте</h2>
+            <form id="emailLoginForm" class="space-y-4">
+                <input id="emailInput" type="email" placeholder="Email" required class="w-full p-2 border rounded-md bg-gray-100 dark:bg-gray-700">
+                <input id="passwordInput" type="password" placeholder="Пароль" required class="w-full p-2 border rounded-md bg-gray-100 dark:bg-gray-700">
+                <button type="submit" class="w-full py-2 px-4 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Войти или зарегистрироваться</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="addWidgetModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4 hidden">
+        <div id="addWidgetModalBackdrop" class="fixed inset-0 bg-black bg-opacity-50"></div>
+        <div class="relative bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-lg p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold">Добавить виджет</h2>
+                <button id="closeAddWidgetModalBtn" class="p-2">&times;</button>
+            </div>
+            <div id="addWidgetGrid" class="grid grid-cols-2 md:grid-cols-4 gap-4"></div>
+        </div>
+    </div>
+
+    <div id="backdrop" class="fixed inset-0 bg-black opacity-50 z-30 hidden lg:hidden"></div>
+    <div id="sidebar" class="w-64 transform -translate-x-full lg:translate-x-0 transition-transform duration-300 ease-in-out fixed top-0 left-0 h-full flex flex-col p-4 bg-gray-200 dark:bg-gray-800 z-40 pt-24">
+        <ul class="space-y-2">
+             <li><button id="sidebarPanelBtn" class="w-full text-left p-2 rounded-md flex items-center space-x-2 hover:bg-blue-600"><img src="https://static.tildacdn.com/lib/icons/tilda/house_home_window.svg" class="h-8 w-8 rounded-md dark:invert" alt="Панель"><span>Панель</span></button></li>
+            <li>
+                <button id="sidebarAiPhotoBtn" class="w-full text-left p-2 rounded-md flex items-center justify-between hover:bg-blue-600">
+                    <span class="flex items-center space-x-2">
+                         <img src="https://static.tildacdn.com/lib/icons/tilda/photography_camera.svg" class="h-8 w-8 rounded-md dark:invert" alt="Фото">
+                         <span>Генерация фото</span>
+                    </span>
+                    <i class="fas fa-chevron-down transform transition-transform duration-200"></i>
+                </button>
+                <div id="photoSubmenu" class="hidden mt-2 pl-4 lg:absolute lg:top-0 lg:left-full lg:w-80 lg:bg-gray-300 lg:dark:bg-gray-700 lg:rounded-r-lg lg:shadow-lg lg:p-2 lg:z-50 lg:max-h-[80vh] lg:overflow-y-auto">
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-2">
+                        <button data-target-section="generatePhotoSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Генерация фото"><span class="text-xs text-center">Генерация фото</span></div></button>
+                        <button data-target-section="removeBgSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3538-6531-4664-b630-306562653762/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Удаление фона"><span class="text-xs text-center">Удаление фона</span></div></button>
+                        <button data-target-section="replaceBgSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6162-3965-4562-a566-303939653736/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Замена фона"><span class="text-xs text-center">Замена фона</span></div></button>
+                        <button data-target-section="replaceObjectSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3935-3331-4132-a663-393939303934/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Замена объекта"><span class="text-xs text-center">Замена объекта</span></div></button>
+                        <button data-target-section="recolorObjectSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6166-3264-4636-b132-306332333832/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Перекрасить объект"><span class="text-xs text-center">Перекрасить объект</span></div></button>
+                        <button data-target-section="expandImageSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3136-6163-4934-a636-373039383636/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Расширить края"><span class="text-xs text-center">Расширить края</span></div></button>
+                        <button data-target-section="upscaleImageSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6466-3539-4633-a463-643461386239/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Upscale"><span class="text-xs text-center">Upscale</span></div></button>
+                        <button data-target-section="enhanceLightSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3135-6362-4734-b135-313938363765/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Свет и тень"><span class="text-xs text-center">Свет и тень</span></div></button>
+                        <button data-target-section="addShadowSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6536-3965-4131-a231-653239636331/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Добавить тень"><span class="text-xs text-center">Добавить тень</span></div></button>
+                        <button data-target-section="freeTransformSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3861-3537-4366-b961-653536373963/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Free Transform"><span class="text-xs text-center">Free Transform</span></div></button>
+                    </div>
+                </div>
+            </li>
+            <li>
+                 <button id="sidebarAiVideoBtn" class="w-full text-left p-2 rounded-md flex items-center justify-between hover:bg-blue-600">
+                    <span class="flex items-center space-x-2">
+                        <img src="https://static.tildacdn.com/lib/icons/tilda/video_camera_record.svg" class="h-8 w-8 rounded-md dark:invert" alt="Видео">
+                        <span>Генерация видео</span>
+                    </span>
+                    <i class="fas fa-chevron-down transform transition-transform duration-200"></i>
+                </button>
+                <div id="videoSubmenu" class="hidden mt-2 pl-4 lg:absolute lg:top-0 lg:left-full lg:w-64 lg:bg-gray-300 lg:dark:bg-gray-700 lg:rounded-r-lg lg:shadow-lg lg:p-2 lg:z-50 lg:max-h-[80vh] lg:overflow-y-auto">
+                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-2">
+                        <button data-target-section="firstFrameSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Генерация кадра"><span class="text-xs text-center">Первый кадр</span></div></button>
+                        <button data-target-section="videoTextSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 border-b border-gray-400 dark:border-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6366-6433-4236-b663-643038393364/IMG_7441.gif" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Текст в видео"><span class="text-xs text-center">На основе текста</span></div></button>
+                        <button data-target-section="videoImageSection" class="w-full text-left p-2 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3338-3865-4234-a666-636433333830/IMG_7440.gif" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Фото в видео"><span class="text-xs text-center">На основе фото</span></div></button>
+                    </div>
+                </div>
+            </li>
+        </ul>
+    </div>
+    
+    <!-- Main Content Area -->
+    <main class="flex-1 p-4 md:p-8 mt-20 lg:ml-64">
+        
+        <div id="mainSection" class="content-section w-full">
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 mb-8">
+                <div class="flex justify-between items-center mb-4">
+                     <h2 class="text-2xl font-bold">Быстрый доступ</h2>
+                     <button id="addQuickAccessBtn" class="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700">
+                         <img src="https://static.tildacdn.com/lib/icons/tilda/plus.svg" class="h-6 w-6 dark:invert">
+                     </button>
+                </div>
+                <div id="quickAccessContainer" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                </div>
+            </div>
+
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 mb-8">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-2xl font-bold">Последние генерации</h2>
+                    <button id="seeAllByCategoryBtn" class="px-4 py-2 text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:underline">По категориям</button>
+                </div>
+                <div class="relative group">
+                    <button id="feedScrollLeftBtn" class="absolute left-0 top-1/2 -translate-y-1/2 bg-black bg-opacity-30 text-white p-2 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                        <img src="https://static.tildacdn.com/lib/icons/tilda/arrow_left.svg" class="h-6 w-6 invert">
+                    </button>
+                    <div id="recentGenerationsFeed" class="flex space-x-4 overflow-x-auto pb-4">
+                        <!-- Feed items will be injected here -->
+                    </div>
+                    <button id="feedScrollRightBtn" class="absolute right-0 top-1/2 -translate-y-1/2 bg-black bg-opacity-30 text-white p-2 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                        <img src="https://static.tildacdn.com/lib/icons/tilda/arrow_right.svg" class="h-6 w-6 invert">
+                    </button>
+                </div>
+            </div>
+
+
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6">
+                 <div id="allToolsContainer">
+                       <div class="mb-6">
+                           <h2 class="text-2xl font-bold mb-4 opacity-75">Фото</h2>
+                           <div id="allToolsPhotoContainer" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4"></div>
+                       </div>
+                       <div>
+                           <h2 class="text-2xl font-bold mb-4 opacity-75">Видео</h2>
+                           <div id="allToolsVideoContainer" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4"></div>
+                       </div>
+                 </div>
+            </div>
+        </div>
+
+        <div id="generatePhotoSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Генерация фото <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="border-b border-gray-200 dark:border-gray-700">
+                <nav class="-mb-px flex space-x-8" aria-label="Tabs">
+                    <button id="generatePhotoTextBtn" class="whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">На основе текста</button>
+                    <button id="generatePhotoImageBtn" class="whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">На основе фото</button>
+                    <button id="generatePhotoBlendBtn" class="whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">На основе 2-х фото</button>
+                </nav>
+            </div>
+            <div id="generatePhotoTextContent" class="mt-6">
+                 <div class="flex flex-col items-center space-y-4 w-full px-4">
+                    <textarea id="generatePhotoTextInput" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-1 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Опишите желаемое изображение..."></textarea>
+                    <div>
+                        <label class="text-lg font-semibold">Соотношение сторон:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoTextRatio" value="16:9" checked class="form-radio"> <span>16:9</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoTextRatio" value="9:16" class="form-radio"> <span>9:16</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoTextRatio" value="1:1" class="form-radio"> <span>1:1</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoTextRatio" value="4:3" class="form-radio"> <span>4:3</span></label>
+                        </div>
+                    </div>
+                    <button id="generatePhotoFromTextBtn" class="px-6 py-3 bg-indigo-600 text-white rounded-full">Сгенерировать</button>
+                </div>
+            </div>
+            <div id="generatePhotoImageContent" class="mt-6 hidden">
+                <div class="flex flex-col items-center space-y-4 w-full px-4">
+                    <input type="file" id="generatePhotoImageUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                    <img id="generatePhotoImagePreview" class="mt-2 rounded-lg max-h-48 hidden">
+                    <textarea id="generatePhotoImageInput" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-1 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Дополнительный промпт (необязательно)"></textarea>
+                    <div>
+                        <label class="text-lg font-semibold">Соотношение сторон:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoImageRatio" value="16:9" checked class="form-radio"> <span>16:9</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoImageRatio" value="9:16" class="form-radio"> <span>9:16</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoImageRatio" value="1:1" class="form-radio"> <span>1:1</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoImageRatio" value="4:3" class="form-radio"> <span>4:3</span></label>
+                        </div>
+                    </div>
+                    <button id="generatePhotoFromImageBtn" class="px-6 py-3 bg-indigo-600 text-white rounded-full">Сгенерировать</button>
+                </div>
+            </div>
+            <div id="generatePhotoBlendContent" class="mt-6 hidden">
+                <div class="flex flex-col items-center space-y-4 w-full px-4">
+                    <div class="flex gap-4 w-full max-w-2xl">
+                        <div class="w-1/2">
+                            <input type="file" id="generatePhotoBlendImage1" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                            <img id="generatePhotoBlendPreview1" class="mt-2 rounded-lg max-h-48 hidden">
+                        </div>
+                        <div class="w-1/2">
+                            <input type="file" id="generatePhotoBlendImage2" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                            <img id="generatePhotoBlendPreview2" class="mt-2 rounded-lg max-h-48 hidden">
+                        </div>
+                    </div>
+                    <textarea id="generatePhotoBlendInput" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-1 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Дополнительный промпт (необязательно)"></textarea>
+                    <div>
+                        <label class="text-lg font-semibold">Соотношение сторон:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                             <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoBlendRatio" value="16:9" checked class="form-radio"> <span>16:9</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoBlendRatio" value="9:16" class="form-radio"> <span>9:16</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoBlendRatio" value="1:1" class="form-radio"> <span>1:1</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="generatePhotoBlendRatio" value="4:3" class="form-radio"> <span>4:3</span></label>
+                        </div>
+                    </div>
+                    <button id="generatePhotoFromBlendBtn" class="px-6 py-3 bg-indigo-600 text-white rounded-full">Сгенерировать</button>
+                </div>
+            </div>
+             <div id="photoStatus" class="text-center mt-4 text-sm font-medium"></div>
+            <div id="photoResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+            <div class="mt-8 w-full">
+                <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                <div id="sectionRecents_generatePhotoSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                <div id="allRecents_generatePhotoSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+            </div>
+        </div>
+
+        <div id="profileSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8 w-full hidden">
+            <h1 class="text-3xl font-bold text-center relative">Профиль <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            
+            <div class="grid md:grid-cols-2 gap-8 mt-8">
+                <div class="bg-gray-200 dark:bg-gray-700 p-6 rounded-lg text-center">
+                    <h2 class="text-2xl font-bold mb-4">Мой аккаунт</h2>
+                    <div class="flex flex-col items-center">
+                        <img id="profileAvatarDisplay" class="h-24 w-24 rounded-full mb-4 object-cover" src="https://placehold.co/100x100/A0AEC0/ffffff?text=U" alt="Аватар">
+                        <p id="userProfileName" class="text-lg font-semibold mb-2">Анонимный</p>
+                        <label for="avatarUpload" class="cursor-pointer text-sm text-blue-500 hover:text-blue-700">Изменить аватар</label>
+                        <input type="file" id="avatarUpload" class="hidden" accept="image/*">
+                    </div>
+                </div>
+
+                <div class="bg-gray-200 dark:bg-gray-700 p-6 rounded-lg">
+                    <h2 class="text-2xl font-bold mb-4 text-center">Пополнить баланс</h2>
+                     <p id="tokenBalanceProfile" class="text-lg font-semibold text-center mb-4">Баланс: 0 токенов</p>
+                    <div>
+                        <label for="purchaseTokensInput" class="block text-sm font-medium">Количество токенов (от 250 до 10000)</label>
+                        <input type="range" id="purchaseTokensInput" min="250" max="10000" step="50" value="500" class="w-full h-2 bg-gray-300 rounded-lg appearance-none cursor-pointer dark:bg-gray-600">
+                        <div id="purchaseSummary" class="mt-4 text-center"></div>
+                    </div>
+                    <button id="buyTokensBtn" class="mt-6 w-full flex justify-center py-3 px-6 border rounded-md shadow-sm text-lg font-medium text-white bg-teal-600 hover:bg-teal-700"><i class="fas fa-wallet mr-2"></i>Пополнить</button>
+                </div>
+            </div>
+
+             <div id="adminPanelContainer" class="mt-8 hidden">
+                 <h2 class="text-2xl font-bold text-center mb-4">Панель Администратора</h2>
+                  <div class="w-full bg-gray-200 dark:bg-gray-700 p-6 rounded-lg">
+                        <div class="border-b border-gray-300 dark:border-gray-600">
+                           <nav class="-mb-px flex space-x-8" id="adminTabs">
+                                 <button data-tab="users" class="admin-tab whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm border-indigo-500 text-indigo-600">Пользователи</button>
+                                 <button data-tab="broadcast" class="admin-tab whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">Рассылки</button>
+                           </nav>
+                        </div>
+                        <div id="adminUsersTab" class="admin-tab-content py-6">
+                           <div class="flex gap-2">
+                               <input id="adminUserSearchInput" type="text" placeholder="Введите UID пользователя" class="flex-grow p-2 border rounded-md bg-gray-100 dark:bg-gray-800">
+                               <button id="adminUserSearchBtn" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Найти</button>
+                           </div>
+                           <div id="adminUserInfo" class="mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg min-h-[50px]"></div>
+                           <h3 class="text-lg font-bold mt-6 mb-2">Запросы пользователя</h3>
+                           <div id="adminUserRequests" class="mt-4 space-y-2 max-h-96 overflow-y-auto"></div>
+                        </div>
+                        <div id="adminBroadcastTab" class="admin-tab-content py-6 hidden">
+                           <h3 class="text-lg font-bold">Новая рассылка</h3>
+                           <p class="text-sm text-gray-500 mb-2">Это сообщение увидят все пользователи при следующем входе.</p>
+                           <textarea id="adminBroadcastMessage" rows="5" class="w-full p-2 border rounded-md bg-gray-100 dark:bg-gray-800" placeholder="Введите ваше сообщение..."></textarea>
+                           <button id="adminSendBroadcastBtn" class="mt-4 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700">Отправить всем</button>
+                        </div>
+                  </div>
+             </div>
+            
+              <div class="mt-8 space-y-6">
+                  <div>
+                      <h3 class="text-xl font-bold mb-2">Последние сгенерированные фото</h3>
+                      <div id="profilePhotoGenerations" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 justify-start"></div>
+                  </div>
+                  <div>
+                      <h3 class="text-xl font-bold mb-2">Последние сгенерированные видео</h3>
+                      <div id="profileVideoGenerations" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 justify-start"></div>
+                  </div>
+            </div>
+        </div>
+
+        <div id="videoTextSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Видео на основе текста <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4">
+                <div class="w-full max-w-2xl space-y-4">
+                    <div>
+                        <label class="text-lg font-semibold">Выберите модель:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoTextModel" value="VEO-3" checked class="form-radio"> <span>VEO-3</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoTextModel" value="GEN-4" class="form-radio"> <span>GEN-4</span></label>
+                        </div>
+                    </div>
+                    <div>
+                        <label for="videoTextInput" class="block text-lg font-semibold">Промпт:</label>
+                        <textarea id="videoTextInput" rows="4" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-1 block w-full sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Опишите, что вы хотите увидеть в видео"></textarea>
+                    </div>
+                    <div>
+                        <label class="text-lg font-semibold">Соотношение сторон:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoTextRatio" value="16:9" checked class="form-radio"> <span>16:9</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoTextRatio" value="9:16" class="form-radio"> <span>9:16</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoTextRatio" value="1:1" class="form-radio"> <span>1:1</span></label>
+                             <label class="flex items-center space-x-2"><input type="radio" name="videoTextRatio" value="4:3" class="form-radio"> <span>4:3</span></label>
+                        </div>
+                    </div>
+                     <div id="videoTextLengthContainer">
+                        <label class="text-lg font-semibold">Длительность:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoTextLength" value="5s" class="form-radio"> <span>5 сек</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoTextLength" value="8s" checked class="form-radio"> <span>8 сек</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoTextLength" value="10s" class="form-radio"> <span>10 сек</span></label>
+                        </div>
+                    </div>
+                </div>
+                <button id="generateVideoFromTextBtn" class="flex items-center justify-center py-3 px-6 border rounded-full shadow-sm text-lg font-medium text-white bg-gradient-to-r from-indigo-500 to-blue-500 hover:from-indigo-600 hover:to-blue-600 w-full sm:w-auto mt-6">
+                    <i class="fas fa-magic mr-2"></i>Сгенерировать видео
+                </button>
+                <div id="videoStatusFromText" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="videoResultFromText" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                   <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                   <div id="sectionRecents_videoTextSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                   <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                   <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                   <div id="allRecents_videoTextSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="videoImageSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+             <h1 class="text-3xl font-bold text-center relative">Видео на основе фото <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+             <div class="flex flex-col items-center space-y-4 w-full px-4">
+                <div class="w-full max-w-2xl space-y-4">
+                     <div>
+                        <label class="text-lg font-semibold">Выберите модель:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageModel" value="Ray-2" checked class="form-radio"> <span>Ray-2</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageModel" value="Ray-2 flash" class="form-radio"> <span>Ray-2 flash</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageModel" value="GEN-4" class="form-radio"> <span>GEN-4</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageModel" value="VEO-3" class="form-radio"> <span>VEO-3</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageModel" value="Midjourney V1" class="form-radio"> <span>Midjourney V1</span></label>
+                        </div>
+                    </div>
+                    <div>
+                         <label for="imageUploadVideo" class="block text-lg font-semibold">Начальное фото:</label>
+                         <input type="file" id="imageUploadVideo" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                         <img id="imagePreviewVideo" class="mt-2 rounded-lg max-h-48 hidden">
+                    </div>
+                    <div id="videoImagePromptLabel">
+                        <label for="videoImageInput" class="block text-lg font-semibold">Промпт <span class="text-sm text-red-500">(обязательно для VEO-3)</span>:</label>
+                        <textarea id="videoImageInput" rows="3" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-1 block w-full sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Опишите движение или изменения"></textarea>
+                    </div>
+                     <div id="videoImageProportionsContainer">
+                        <label class="text-lg font-semibold">Соотношение сторон:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageRatio" value="16:9" checked class="form-radio"> <span>16:9</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageRatio" value="9:16" class="form-radio"> <span>9:16</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageRatio" value="1:1" class="form-radio"> <span>1:1</span></label>
+                             <label class="flex items-center space-x-2"><input type="radio" name="videoImageRatio" value="4:3" class="form-radio"> <span>4:3</span></label>
+                        </div>
+                    </div>
+                     <div id="videoImageLengthContainer">
+                        <label class="text-lg font-semibold">Длительность:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageLength" value="5s" checked class="form-radio"> <span>5 сек</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageLength" value="8s" class="form-radio"> <span>8 сек</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="videoImageLength" value="10s" class="form-radio"> <span>10 сек</span></label>
+                        </div>
+                    </div>
+                     <div id="videoImageEndPhotoContainer" class="hidden">
+                          <label for="videoImageEndPhotoUpload" class="block text-lg font-semibold">Конечное фото (для Ray-2):</label>
+                          <input type="file" id="videoImageEndPhotoUpload" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                          <img id="videoImageEndPhotoPreview" class="mt-2 rounded-lg max-h-48 hidden">
+                    </div>
+                </div>
+                <button id="generateVideoFromImageBtn" class="flex items-center justify-center py-3 px-6 border rounded-full shadow-sm text-lg font-medium text-white bg-gradient-to-r from-indigo-500 to-blue-500 hover:from-indigo-600 hover:to-blue-600 w-full sm:w-auto mt-6">
+                    <i class="fas fa-magic mr-2"></i>Сгенерировать видео
+                </button>
+                <div id="videoFromImageStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="videoResultFromImage" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div id="videoExtendButtonsContainer" class="mt-4 flex gap-4 hidden">
+                    <button class="px-4 py-2 bg-blue-500 text-white rounded-md">Продлить на 5 сек</button>
+                    <button class="px-4 py-2 bg-blue-500 text-white rounded-md">Продлить на 10 сек</button>
+                </div>
+                 <div class="mt-8 w-full">
+                   <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                   <div id="sectionRecents_videoImageSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                   <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                   <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                   <div id="allRecents_videoImageSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
+            </div>
+        </div>
+
+         <div id="firstFrameSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Генерация первого кадра <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="border-b border-gray-200 dark:border-gray-700">
+                <nav class="-mb-px flex space-x-8" aria-label="Tabs">
+                    <button id="firstFrameTextBtn" class="whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">На основе текста</button>
+                    <button id="firstFrameImageBtn" class="whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">На основе фото</button>
+                    <button id="firstFrameBlendBtn" class="whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">На основе 2-х фото</button>
+                </nav>
+            </div>
+            <div id="firstFrameTextContent" class="mt-6">
+                <div class="flex flex-col items-center space-y-4 w-full px-4">
+                    <textarea id="firstFrameTextInput" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-1 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Опишите первый кадр..."></textarea>
+                     <div>
+                        <label class="text-lg font-semibold">Соотношение сторон:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="firstFrameTextRatio" value="16:9" checked class="form-radio"> <span>16:9</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="firstFrameTextRatio" value="9:16" class="form-radio"> <span>9:16</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="firstFrameTextRatio" value="1:1" class="form-radio"> <span>1:1</span></label>
+                             <label class="flex items-center space-x-2"><input type="radio" name="firstFrameTextRatio" value="4:3" class="form-radio"> <span>4:3</span></label>
+                        </div>
+                    </div>
+                    <button id="generateFirstFrameTextBtn" class="px-6 py-3 bg-indigo-600 text-white rounded-full">Сгенерировать</button>
+                </div>
+            </div>
+            <div id="firstFrameImageContent" class="mt-6 hidden">
+                 <div class="flex flex-col items-center space-y-4 w-full px-4">
+                     <input type="file" id="firstFrameImageUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                     <img id="firstFrameImagePreview" class="mt-2 rounded-lg max-h-48 hidden">
+                    <textarea id="firstFrameImageInput" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-1 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Дополнительный промпт (необязательно)"></textarea>
+                     <div>
+                        <label class="text-lg font-semibold">Соотношение сторон:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="firstFrameImageRatio" value="16:9" checked class="form-radio"> <span>16:9</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="firstFrameImageRatio" value="9:16" class="form-radio"> <span>9:16</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="firstFrameImageRatio" value="1:1" class="form-radio"> <span>1:1</span></label>
+                             <label class="flex items-center space-x-2"><input type="radio" name="firstFrameImageRatio" value="4:3" class="form-radio"> <span>4:3</span></label>
+                        </div>
+                    </div>
+                    <button id="generateFirstFrameImageBtn" class="px-6 py-3 bg-indigo-600 text-white rounded-full">Сгенерировать</button>
+                </div>
+            </div>
+            <div id="firstFrameBlendContent" class="mt-6 hidden">
+                 <div class="flex flex-col items-center space-y-4 w-full px-4">
+                    <div class="flex gap-4 w-full max-w-2xl">
+                        <div class="w-1/2">
+                             <input type="file" id="firstFrameBlendImage1" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                             <img id="firstFrameBlendPreview1" class="mt-2 rounded-lg max-h-48 hidden">
+                        </div>
+                        <div class="w-1/2">
+                            <input type="file" id="firstFrameBlendImage2" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                            <img id="firstFrameBlendPreview2" class="mt-2 rounded-lg max-h-48 hidden">
+                        </div>
+                    </div>
+                    <textarea id="firstFrameBlendInput" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-1 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Дополнительный промпт (необязательно)"></textarea>
+                     <div>
+                        <label class="text-lg font-semibold">Соотношение сторон:</label>
+                        <div class="flex flex-wrap gap-4 mt-2">
+                            <label class="flex items-center space-x-2"><input type="radio" name="firstFrameBlendRatio" value="16:9" checked class="form-radio"> <span>16:9</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="firstFrameBlendRatio" value="9:16" class="form-radio"> <span>9:16</span></label>
+                            <label class="flex items-center space-x-2"><input type="radio" name="firstFrameBlendRatio" value="1:1" class="form-radio"> <span>1:1</span></label>
+                             <label class="flex items-center space-x-2"><input type="radio" name="firstFrameBlendRatio" value="4:3" class="form-radio"> <span>4:3</span></label>
+                        </div>
+                    </div>
+                    <button id="generateFirstFrameBlendBtn" class="px-6 py-3 bg-indigo-600 text-white rounded-full">Сгенерировать</button>
+                </div>
+            </div>
+            
+            <div id="firstFrameStatus" class="text-center mt-4 text-sm font-medium"></div>
+            <div id="firstFrameResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+            <div class="mt-8 w-full">
+               <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+               <div id="sectionRecents_firstFrameSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+               <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+               <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+               <div id="allRecents_firstFrameSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+            </div>
+        </div>
+
+        <!-- Placeholder Sections -->
+        <div id="removeBgSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Удаление фона <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <input type="file" id="removeBgUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                <img id="removeBgPreview" class="mt-2 rounded-lg max-h-60 hidden">
+                <button id="removeBgBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Удалить фон</button>
+                <div id="removeBgStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="removeBgResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                   <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                   <div id="sectionRecents_removeBgSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                   <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                   <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                   <div id="allRecents_removeBgSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
+            </div>
+        </div>
+        <div id="replaceBgSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Замена фона <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
+                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+            </div>
+        </div>
+        <div id="replaceObjectSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Замена объекта <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
+                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+            </div>
+        </div>
+        <div id="recolorObjectSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Перекрасить объект <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
+                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+            </div>
+        </div>
+        <div id="expandImageSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Расширить края <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
+                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+            </div>
+        </div>
+        <div id="upscaleImageSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Upscale <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
+                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+            </div>
+        </div>
+        <div id="enhanceLightSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Свет и тень <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
+                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+            </div>
+        </div>
+        <div id="addShadowSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Добавить тень <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <img src="https://img.icons8.com/plasticine/100/000000/maintenance.png" alt="Under construction" class="w-24 h-24">
+                <p class="text-center text-gray-500 text-lg">Этот раздел находится в разработке.</p>
+            </div>
+        </div>
+        <div id="freeTransformSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Свободное трансформирование <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                 <input type="file" id="freeTransformUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                 <div id="freeTransformCanvasContainer" class="relative mt-4 mx-auto" style="max-width: 90vw; max-height: 60vh;">
+                     <!-- Image and Canvas will be inserted here by JS -->
+                 </div>
+                 <textarea id="freeTransformPrompt" rows="3" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-4 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Опишите, как изменить закрашенную область"></textarea>
+                 <button id="generateFreeTransformBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Трансформировать</button>
+                 <div id="freeTransformStatus" class="text-center mt-4 text-sm font-medium"></div>
+                 <div id="freeTransformResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                 <div class="mt-8 w-full">
+                   <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                   <div id="sectionRecents_freeTransformSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                   <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                   <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                   <div id="allRecents_freeTransformSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+</body>
+</html>
