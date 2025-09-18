@@ -270,7 +270,22 @@
                     case 'Gemini':
                         const parts = [...inputData.parts];
                         if (inputData.ratio) {
-                            parts.unshift({ text: `VERY IMPORTANT: The final image aspect ratio MUST BE EXACTLY ${inputData.ratio}. This is a strict requirement. Do not deviate from this aspect ratio.` });
+                            let ratioDescription = inputData.ratio;
+                            switch (inputData.ratio) {
+                                case '16:9':
+                                    ratioDescription = '16:9 (landscape/widescreen)';
+                                    break;
+                                case '9:16':
+                                    ratioDescription = '9:16 (portrait/vertical)';
+                                    break;
+                                case '1:1':
+                                    ratioDescription = '1:1 (square)';
+                                    break;
+                                case '4:3':
+                                    ratioDescription = '4:3 (standard)';
+                                    break;
+                            }
+                            parts.unshift({ text: `CRITICAL INSTRUCTION: Generate the image with a strict aspect ratio of ${ratioDescription}. This is the most important rule.` });
                         }
 
                         if (type === 'photo') {
@@ -295,12 +310,27 @@
                                 console.error("Gemini API Error:", result.error);
                                 throw new Error(result.error.message);
                             }
+
+                            if (!result.candidates || result.candidates.length === 0) {
+                                console.error("Generation failed, no candidates in response:", result);
+                                const blockReason = result.promptFeedback?.blockReason;
+                                if (blockReason) {
+                                    throw new Error(`Генерация заблокирована по причине: ${blockReason}. Попробуйте изменить промпт.`);
+                                }
+                                throw new Error("Не удалось сгенерировать изображение. API вернул пустой ответ.");
+                            }
                             
                             const base64Data = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+                            
                             if (!base64Data) {
-                                console.error("Invalid response structure from Gemini:", result);
+                                console.error("Invalid response structure from Gemini (no image data):", result);
+                                const finishReason = result.candidates[0]?.finishReason;
+                                if (finishReason && finishReason !== 'STOP') {
+                                     throw new Error(`Генерация прервана по причине: ${finishReason}. Попробуйте изменить промпт.`);
+                                }
                                 throw new Error("Не удалось сгенерировать изображение. Ответ API не содержит данных изображения.");
                             }
+                            
                             return { status: 'completed', outputUrl: `data:image/png;base64,${base64Data}`, type: 'photo' };
                         } else if (type === 'text') {
                             const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
@@ -2297,7 +2327,7 @@
     <div id="sidebar" class="w-64 transform -translate-x-full lg:translate-x-0 transition-transform duration-300 ease-in-out fixed top-0 left-0 h-full flex flex-col p-4 bg-gray-200 dark:bg-gray-800 z-40 pt-24">
         <ul class="space-y-2">
              <li><button id="sidebarPanelBtn" class="w-full text-left p-2 rounded-md flex items-center space-x-2 hover:bg-blue-600"><img src="https://static.tildacdn.com/lib/icons/tilda/house_home_window.svg" class="h-8 w-8 rounded-md dark:invert" alt="Панель"><span>Панель</span></button></li>
-            <li>
+            <li class="relative">
                 <button id="sidebarAiPhotoBtn" class="w-full text-left p-2 rounded-md flex items-center justify-between hover:bg-blue-600">
                     <span class="flex items-center space-x-2">
                          <img src="https://static.tildacdn.com/lib/icons/tilda/photography_camera.svg" class="h-8 w-8 rounded-md dark:invert" alt="Фото">
@@ -2320,7 +2350,7 @@
                 </div>
             </div>
         </li>
-        <li>
+        <li class="relative">
              <button id="sidebarAiVideoBtn" class="w-full text-left p-2 rounded-md flex items-center justify-between hover:bg-blue-600">
                     <span class="flex items-center space-x-2">
                         <img src="https://static.tildacdn.com/lib/icons/tilda/video_camera_record.svg" class="h-8 w-8 rounded-md dark:invert" alt="Видео">
@@ -2960,6 +2990,5 @@
 
 </body>
 </html>
-
 
 
