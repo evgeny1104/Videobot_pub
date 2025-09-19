@@ -73,6 +73,10 @@
             { id: 'text_to_video', name: 'На основе текста', icon: 'https://static.tildacdn.com/tild6366-6433-4236-b663-643038393364/IMG_7441.gif', target: 'videoTextSection', category: 'video' },
             { id: 'photo_to_video', name: 'На основе фото', icon: 'https://static.tildacdn.com/tild3338-3865-4234-a666-636433333830/IMG_7440.gif', target: 'videoImageSection', category: 'video' },
             { id: 'first_frame', name: 'Генерация первого кадра', icon: 'https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg', target: 'firstFrameSection', category: 'video' },
+            { id: 'change_aspect_ratio', name: 'Изменить пропорции', icon: 'https://static.tildacdn.com/tild3136-6163-4934-a636-373039383636/Image_36.jpeg', target: 'changeAspectRatioSection', category: 'video' },
+            { id: 'character_voiceover', name: 'Ваш персонаж', icon: 'https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg', target: 'characterVoiceoverSection', category: 'video' },
+            { id: 'voiceover_video', name: 'Озвучить видео', icon: 'https://static.tildacdn.com/tild3135-6362-4734-b135-313938363765/Image_36.jpeg', target: 'voiceoverVideoSection', category: 'video' },
+            { id: 'translate_video', name: 'Перевести видео', icon: 'https://static.tildacdn.com/tild3861-3537-4366-b961-653536373963/Image_36.jpeg', target: 'translateVideoSection', category: 'video' },
         ];
         
         const fileToDataUrl = (file) => new Promise((resolve, reject) => {
@@ -270,22 +274,7 @@
                     case 'Gemini':
                         const parts = [...inputData.parts];
                         if (inputData.ratio) {
-                            let ratioDescription = inputData.ratio;
-                            switch (inputData.ratio) {
-                                case '16:9':
-                                    ratioDescription = '16:9 (landscape/widescreen)';
-                                    break;
-                                case '9:16':
-                                    ratioDescription = '9:16 (portrait/vertical)';
-                                    break;
-                                case '1:1':
-                                    ratioDescription = '1:1 (square)';
-                                    break;
-                                case '4:3':
-                                    ratioDescription = '4:3 (standard)';
-                                    break;
-                            }
-                            parts.unshift({ text: `CRITICAL INSTRUCTION: Generate the image with a strict aspect ratio of ${ratioDescription}. This is the most important rule.` });
+                            parts.unshift({ text: `VERY IMPORTANT: The final image aspect ratio MUST BE EXACTLY ${inputData.ratio}. This is a strict requirement. Do not deviate from this aspect ratio.` });
                         }
 
                         if (type === 'photo') {
@@ -310,27 +299,12 @@
                                 console.error("Gemini API Error:", result.error);
                                 throw new Error(result.error.message);
                             }
-
-                            if (!result.candidates || result.candidates.length === 0) {
-                                console.error("Generation failed, no candidates in response:", result);
-                                const blockReason = result.promptFeedback?.blockReason;
-                                if (blockReason) {
-                                    throw new Error(`Генерация заблокирована по причине: ${blockReason}. Попробуйте изменить промпт.`);
-                                }
-                                throw new Error("Не удалось сгенерировать изображение. API вернул пустой ответ.");
-                            }
                             
                             const base64Data = result?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
-                            
                             if (!base64Data) {
-                                console.error("Invalid response structure from Gemini (no image data):", result);
-                                const finishReason = result.candidates[0]?.finishReason;
-                                if (finishReason && finishReason !== 'STOP') {
-                                     throw new Error(`Генерация прервана по причине: ${finishReason}. Попробуйте изменить промпт.`);
-                                }
+                                console.error("Invalid response structure from Gemini:", result);
                                 throw new Error("Не удалось сгенерировать изображение. Ответ API не содержит данных изображения.");
                             }
-                            
                             return { status: 'completed', outputUrl: `data:image/png;base64,${base64Data}`, type: 'photo' };
                         } else if (type === 'text') {
                             const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
@@ -831,6 +805,10 @@
                 case 'upscaleImageSection': return { statusElement: dom.upscaleImageStatus, resultElement: dom.upscaleImageResult };
                 case 'enhanceLightSection': return { statusElement: dom.enhanceLightStatus, resultElement: dom.enhanceLightResult };
                 case 'freeTransformSection': return { statusElement: dom.freeTransformStatus, resultElement: dom.freeTransformResult };
+                case 'changeAspectRatioSection': return { statusElement: dom.changeAspectRatioStatus, resultElement: dom.changeAspectRatioResult };
+                case 'characterVoiceoverSection': return { statusElement: dom.characterVoiceoverStatus, resultElement: dom.characterVoiceoverResult };
+                case 'voiceoverVideoSection': return { statusElement: dom.voiceoverVideoStatus, resultElement: dom.voiceoverVideoResult };
+                case 'translateVideoSection': return { statusElement: dom.translateVideoStatus, resultElement: dom.translateVideoResult };
                 default: return { statusElement: null, resultElement: null };
             }
         }
@@ -998,6 +976,37 @@
                 videoImagePromptLabel: document.getElementById('videoImagePromptLabel'),
                 videoExtendButtonsContainer: document.getElementById('videoExtendButtonsContainer'),
                 videoTextLengthContainer: document.getElementById('videoTextLengthContainer'),
+
+                // --- New Video Sections ---
+                changeAspectRatioSection: document.getElementById('changeAspectRatioSection'),
+                changeAspectRatioUpload: document.getElementById('changeAspectRatioUpload'),
+                changeAspectRatioPreview: document.getElementById('changeAspectRatioPreview'),
+                changeAspectRatioBtn: document.getElementById('changeAspectRatioBtn'),
+                changeAspectRatioStatus: document.getElementById('changeAspectRatioStatus'),
+                changeAspectRatioResult: document.getElementById('changeAspectRatioResult'),
+
+                characterVoiceoverSection: document.getElementById('characterVoiceoverSection'),
+                characterVoiceoverUpload: document.getElementById('characterVoiceoverUpload'),
+                characterVoiceoverPreview: document.getElementById('characterVoiceoverPreview'),
+                characterVoiceoverText: document.getElementById('characterVoiceoverText'),
+                characterVoiceoverBtn: document.getElementById('characterVoiceoverBtn'),
+                characterVoiceoverStatus: document.getElementById('characterVoiceoverStatus'),
+                characterVoiceoverResult: document.getElementById('characterVoiceoverResult'),
+
+                voiceoverVideoSection: document.getElementById('voiceoverVideoSection'),
+                voiceoverVideoUpload: document.getElementById('voiceoverVideoUpload'),
+                voiceoverVideoPreview: document.getElementById('voiceoverVideoPreview'),
+                voiceoverVideoText: document.getElementById('voiceoverVideoText'),
+                voiceoverVideoBtn: document.getElementById('voiceoverVideoBtn'),
+                voiceoverVideoStatus: document.getElementById('voiceoverVideoStatus'),
+                voiceoverVideoResult: document.getElementById('voiceoverVideoResult'),
+
+                translateVideoSection: document.getElementById('translateVideoSection'),
+                translateVideoUpload: document.getElementById('translateVideoUpload'),
+                translateVideoPreview: document.getElementById('translateVideoPreview'),
+                translateVideoBtn: document.getElementById('translateVideoBtn'),
+                translateVideoStatus: document.getElementById('translateVideoStatus'),
+                translateVideoResult: document.getElementById('translateVideoResult'),
 
                 // --- Remove BG Section ---
                 removeBgUpload: document.getElementById('removeBgUpload'),
@@ -2176,6 +2185,42 @@
             });
 
 
+            // --- Event Listeners for new video tools ---
+            dom.changeAspectRatioBtn?.addEventListener('click', () => {
+                const file = dom.changeAspectRatioUpload.files[0];
+                if (!file) return showModal({ title: 'Ошибка', content: 'Пожалуйста, загрузите видео.' });
+                const model = 'VEO-3'; // Mock model
+                const ratio = document.querySelector('input[name="changeAspectRatioRatio"]:checked').value;
+                createRequest({ type: 'video', model, source: 'change_aspect_ratio', inputData: { ratio }, statusElement: dom.changeAspectRatioStatus, resultElement: dom.changeAspectRatioResult, cacheKey: 'changeAspectRatioSection' });
+            });
+
+            dom.characterVoiceoverBtn?.addEventListener('click', () => {
+                const file = dom.characterVoiceoverUpload.files[0];
+                const text = dom.characterVoiceoverText.value;
+                if (!file) return showModal({ title: 'Ошибка', content: 'Пожалуйста, загрузите изображение персонажа.' });
+                if (!text) return showModal({ title: 'Ошибка', content: 'Пожалуйста, введите текст для озвучки.' });
+                const model = 'VEO-3'; // Mock model
+                createRequest({ type: 'video', model, source: 'character_voiceover', inputData: { text }, statusElement: dom.characterVoiceoverStatus, resultElement: dom.characterVoiceoverResult, cacheKey: 'characterVoiceoverSection' });
+            });
+
+            dom.voiceoverVideoBtn?.addEventListener('click', () => {
+                const file = dom.voiceoverVideoUpload.files[0];
+                const text = dom.voiceoverVideoText.value;
+                if (!file) return showModal({ title: 'Ошибка', content: 'Пожалуйста, загрузите видео для озвучки.' });
+                if (!text) return showModal({ title: 'Ошибка', content: 'Пожалуйста, введите текст для озвучки.' });
+                const model = 'VEO-3'; // Mock model
+                createRequest({ type: 'video', model, source: 'voiceover_video', inputData: { text }, statusElement: dom.voiceoverVideoStatus, resultElement: dom.voiceoverVideoResult, cacheKey: 'voiceoverVideoSection' });
+            });
+
+            dom.translateVideoBtn?.addEventListener('click', () => {
+                const file = dom.translateVideoUpload.files[0];
+                if (!file) return showModal({ title: 'Ошибка', content: 'Пожалуйста, загрузите видео для перевода.' });
+                const model = 'VEO-3'; // Mock model
+                const lang = document.querySelector('select[name="translateVideoLang"]').value;
+                createRequest({ type: 'video', model, source: 'translate_video', inputData: { lang }, statusElement: dom.translateVideoStatus, resultElement: dom.translateVideoResult, cacheKey: 'translateVideoSection' });
+            });
+
+
             // Initial UI setup
             document.querySelectorAll('input[name="videoImageModel"]').forEach(radio => radio.addEventListener('change', updateVideoImageOptions));
             document.querySelectorAll('input[name="videoTextModel"]').forEach(radio => radio.addEventListener('change', updateVideoTextOptions));
@@ -2216,6 +2261,12 @@
             setupImagePreview('expandImageUpload', 'expandImagePreview');
             setupImagePreview('upscaleImageUpload', 'upscaleImagePreview');
             setupImagePreview('enhanceLightUpload', 'enhanceLightPreview');
+
+            // Setup previews for new sections
+            setupImagePreview('changeAspectRatioUpload', 'changeAspectRatioPreview');
+            setupImagePreview('characterVoiceoverUpload', 'characterVoiceoverPreview');
+            setupImagePreview('voiceoverVideoUpload', 'voiceoverVideoPreview');
+            setupImagePreview('translateVideoUpload', 'translateVideoPreview');
         };
     </script>
     <style>
@@ -2327,7 +2378,7 @@
     <div id="sidebar" class="w-64 transform -translate-x-full lg:translate-x-0 transition-transform duration-300 ease-in-out fixed top-0 left-0 h-full flex flex-col p-4 bg-gray-200 dark:bg-gray-800 z-40 pt-24">
         <ul class="space-y-2">
              <li><button id="sidebarPanelBtn" class="w-full text-left p-2 rounded-md flex items-center space-x-2 hover:bg-blue-600"><img src="https://static.tildacdn.com/lib/icons/tilda/house_home_window.svg" class="h-8 w-8 rounded-md dark:invert" alt="Панель"><span>Панель</span></button></li>
-            <li class="relative">
+            <li>
                 <button id="sidebarAiPhotoBtn" class="w-full text-left p-2 rounded-md flex items-center justify-between hover:bg-blue-600">
                     <span class="flex items-center space-x-2">
                          <img src="https://static.tildacdn.com/lib/icons/tilda/photography_camera.svg" class="h-8 w-8 rounded-md dark:invert" alt="Фото">
@@ -2350,7 +2401,7 @@
                 </div>
             </div>
         </li>
-        <li class="relative">
+        <li>
              <button id="sidebarAiVideoBtn" class="w-full text-left p-2 rounded-md flex items-center justify-between hover:bg-blue-600">
                     <span class="flex items-center space-x-2">
                         <img src="https://static.tildacdn.com/lib/icons/tilda/video_camera_record.svg" class="h-8 w-8 rounded-md dark:invert" alt="Видео">
@@ -2363,6 +2414,10 @@
                     <button data-target-section="firstFrameSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Генерация кадра"><span class="text-xs text-center">Первый кадр</span></div></button>
                     <button data-target-section="videoTextSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild6366-6433-4236-b663-643038393364/IMG_7441.gif" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Текст в видео"><span class="text-xs text-center">На основе текста</span></div></button>
                     <button data-target-section="videoImageSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3338-3865-4234-a666-636433333830/IMG_7440.gif" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Фото в видео"><span class="text-xs text-center">На основе фото</span></div></button>
+                    <button data-target-section="changeAspectRatioSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3136-6163-4934-a636-373039383636/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Изменить пропорции"><span class="text-xs text-center">Изменить пропорции</span></div></button>
+                    <button data-target-section="characterVoiceoverSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3734-3263-4166-b633-636362663363/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Ваш персонаж"><span class="text-xs text-center">Ваш персонаж</span></div></button>
+                    <button data-target-section="voiceoverVideoSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3135-6362-4734-b135-313938363765/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Озвучить видео"><span class="text-xs text-center">Озвучить видео</span></div></button>
+                    <button data-target-section="translateVideoSection" class="w-full text-left p-3 hover:bg-gray-400 dark:hover:bg-gray-600"><div class="flex flex-col items-center"><img src="https://static.tildacdn.com/tild3861-3537-4366-b961-653536373963/Image_36.jpeg" class="w-full rounded-md object-cover mb-1 aspect-[16/9]" alt="Перевести видео"><span class="text-xs text-center">Перевести видео</span></div></button>
                 </div>
             </div>
         </li>
@@ -2986,9 +3041,107 @@
             </div>
         </div>
 
+        <!-- NEW SECTIONS START HERE -->
+
+        <div id="changeAspectRatioSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Изменить пропорции видео <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <p class="text-sm text-center text-gray-500">Загрузите видео и выберите новое соотношение сторон.</p>
+                <input type="file" id="changeAspectRatioUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="video/*">
+                <video id="changeAspectRatioPreview" class="mt-2 rounded-lg max-h-60 hidden" controls></video>
+                <div class="w-full max-w-2xl">
+                    <label class="text-lg font-semibold">Новое соотношение сторон:</label>
+                    <div class="flex flex-wrap gap-4 mt-2">
+                        <label class="flex items-center space-x-2"><input type="radio" name="changeAspectRatioRatio" value="16:9" checked class="form-radio"> <span>16:9</span></label>
+                        <label class="flex items-center space-x-2"><input type="radio" name="changeAspectRatioRatio" value="9:16" class="form-radio"> <span>9:16</span></label>
+                        <label class="flex items-center space-x-2"><input type="radio" name="changeAspectRatioRatio" value="1:1" class="form-radio"> <span>1:1</span></label>
+                        <label class="flex items-center space-x-2"><input type="radio" name="changeAspectRatioRatio" value="4:3" class="form-radio"> <span>4:3</span></label>
+                    </div>
+                </div>
+                <button id="changeAspectRatioBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Изменить</button>
+                <div id="changeAspectRatioStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="changeAspectRatioResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                    <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                    <div id="sectionRecents_changeAspectRatioSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                    <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                    <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                    <div id="allRecents_changeAspectRatioSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="characterVoiceoverSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Ваш персонаж с озвучкой <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <p class="text-sm text-center text-gray-500">Загрузите изображение персонажа и введите текст, который он должен произнести.</p>
+                <input type="file" id="characterVoiceoverUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="image/*">
+                <img id="characterVoiceoverPreview" class="mt-2 rounded-lg max-h-60 hidden">
+                <textarea id="characterVoiceoverText" rows="4" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-1 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Введите текст для озвучки..."></textarea>
+                <button id="characterVoiceoverBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Создать видео</button>
+                <div id="characterVoiceoverStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="characterVoiceoverResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                    <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                    <div id="sectionRecents_characterVoiceoverSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                    <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                    <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                    <div id="allRecents_characterVoiceoverSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="voiceoverVideoSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Озвучить видео <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <p class="text-sm text-center text-gray-500">Загрузите видео (без звука или звук будет заменен) и введите текст для озвучки.</p>
+                <input type="file" id="voiceoverVideoUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="video/*">
+                <video id="voiceoverVideoPreview" class="mt-2 rounded-lg max-h-60 hidden" controls></video>
+                <textarea id="voiceoverVideoText" rows="4" class="w-full max-w-2xl shadow-sm focus:ring-indigo-500 focus:border-indigo-500 mt-1 block sm:text-sm border border-gray-400 rounded-md p-4 bg-gray-100 dark:bg-gray-900" placeholder="Введите текст для озвучки..."></textarea>
+                <button id="voiceoverVideoBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Озвучить</button>
+                <div id="voiceoverVideoStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="voiceoverVideoResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                    <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                    <div id="sectionRecents_voiceoverVideoSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                    <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                    <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                    <div id="allRecents_voiceoverVideoSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="translateVideoSection" class="content-section bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-8 w-full flex-col gap-8 hidden">
+            <h1 class="text-3xl font-bold text-center relative">Перевести видео <button class="absolute top-0 left-0 p-2 back-to-main-btn"><img src="https://static.tildacdn.com/tild3933-3661-4630-a665-383761323761/Exit.png" alt="Назад" class="h-6 w-6 dark:invert-dark"></button></h1>
+            <div class="flex flex-col items-center space-y-4 w-full px-4 mt-8">
+                <p class="text-sm text-center text-gray-500">Загрузите видео, и мы переведем речь, сохранив исходный голос.</p>
+                <input type="file" id="translateVideoUpload" class="mt-1 block w-full max-w-2xl text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100" accept="video/*">
+                <video id="translateVideoPreview" class="mt-2 rounded-lg max-h-60 hidden" controls></video>
+                <div class="w-full max-w-2xl">
+                    <label for="translateVideoLang" class="block text-lg font-semibold">На какой язык перевести?</label>
+                    <select name="translateVideoLang" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md bg-gray-100 dark:bg-gray-900">
+                        <option>Русский</option>
+                        <option>Английский</option>
+                        <option>Испанский</option>
+                        <option>Французский</option>
+                        <option>Немецкий</option>
+                    </select>
+                </div>
+                <button id="translateVideoBtn" class="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-full">Перевести</button>
+                <div id="translateVideoStatus" class="text-center mt-4 text-sm font-medium"></div>
+                <div id="translateVideoResult" class="flex justify-center w-full max-w-lg mt-4"></div>
+                <div class="mt-8 w-full">
+                    <h3 class="text-lg font-semibold mb-2">Последние в этом разделе</h3>
+                    <div id="sectionRecents_translateVideoSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                    <hr class="w-full my-4 border-gray-300 dark:border-gray-600">
+                    <h3 class="text-lg font-semibold mb-2">Все последние генерации</h3>
+                    <div id="allRecents_translateVideoSection" class="generation-grid grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 overflow-x-auto pb-2"></div>
+                </div>
+            </div>
+        </div>
+
     </main>
 
 </body>
 </html>
-
 
